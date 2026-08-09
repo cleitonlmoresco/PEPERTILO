@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}PEPERTILO 1.0 - Upload e Análise{% endblock %}
+
+{% block content %}
+<section class="secao-upload">
+    <div class="cabecalho-pagina">
+        <h2>Processar Novo Arquivo</h2>
+        <p class="subtitulo">Envie diagramas, PDFs vetoriais ou imagens de circuitos para análise automática e restauração.</p>
+    </div>
+
+    <form action="{{ url_for('index') }}" method="POST" enctype="multipart/form-data" class="form-upload" id="formUpload">
+        <div class="area-drop" id="areaDrop">
+            <div class="icone-upload">
+                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+            </div>
+            <p class="instrucao-drag">Arraste seu arquivo aqui ou <label for="arquivo" class="btn-selecionar">procure no computador</label></p>
+            <input type="file" name="arquivo" id="arquivo" required accept=".pdf,.png,.jpg,.jpeg,.bmp" class="input-escondido">
+            <div id="infoArquivo" class="info-arquivo oculto">
+                <span id="nomeArquivo"></span>
+                <button type="button" id="btnRemoverArquivo" class="btn-remover">&times;</button>
+            </div>
+        </div>
+
+        <div class="painel-opcoes">
+            <h3>Modo de Processamento</h3>
+            <div class="grid-modos">
+                <label class="card-modo ativo">
+                    <input type="radio" name="modo" value="padrao" checked>
+                    <div class="conteudo-card">
+                        <span class="badge">Recomendado</span>
+                        <h4>Pipeline Completo (M0 - M7)</h4>
+                        <p>Classificação, restauração de imagem, detecção de símbolos por visão computacional e exportação Excel.</p>
+                    </div>
+                </label>
+
+                <label class="card-modo">
+                    <input type="radio" name="modo" value="mpu">
+                    <div class="conteudo-card">
+                        <span class="badge badge-secundario">Especializado</span>
+                        <h4>Modo MPU / Microcontrolador</h4>
+                        <p>Focado em mapeamento de pinagem, barramentos e identificação de componentes MPU/MCU.</p>
+                    </div>
+                </label>
+            </div>
+        </div>
+
+        <div class="acoes-formulario">
+            <button type="submit" class="btn-principal" id="btnEnviar">
+                <span>Iniciar Análise</span>
+            </button>
+        </div>
+    </form>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+{% endblock %}
