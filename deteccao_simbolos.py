@@ -10,11 +10,14 @@ import re
 import time
 import traceback
 import os
+import warnings
 from logger_erros import logger, monitorar, ErroExtracao, ErroPipeline, Severidade
 
-# Desativa o motor PIR do PaddleOCR para evitar warnings de compatibilidade
+# Suprimir warnings de compatibilidade
+warnings.filterwarnings('ignore')
 os.environ['FLAGS_enable_pir_api'] = '0'
 os.environ['FLAGS_enable_pir_in_executor'] = '0'
+os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
 
 CONFIG = {
     'area_min_componente': 500,
@@ -90,68 +93,95 @@ def extrair_retangulos(binaria, canvas):
 def extrair_textos_ocr(imagem):
     """Usa PaddleOCR ou Tesseract para extrair textos da imagem."""
     textos = []
+    
+    # Tentar PaddleOCR primeiro
     try:
         from paddleocr import PaddleOCR
-        ocr = PaddleOCR(use_angle_cls=True, lang='en')
+        logger.info("Inicializando PaddleOCR...", extra={'modulo': 'M4'})
+        
+        # Desabilitar PIR internamente
+        os.environ['FLAGS_enable_pir_api'] = '1'
+        os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+        
+        ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)
+        
         if len(imagem.shape) == 2:
             img_rgb = cv2.cvtColor(imagem, cv2.COLOR_GRAY2RGB)
         else:
             img_rgb = cv2.cvtColor(imagem, cv2.COLOR_BGR2RGB)
-        resultado = ocr.ocr(img_rgb, cls=True)
+        
+        resultado = ocr.ocr(img_rgb, cls=False)
+        
         if resultado and resultado[0]:
             for line in resultado[0]:
-                box = line[0]
-                texto = line[1][0]
-                conf = line[1][1]
-                xc = (box[0][0] + box[2][0]) / 2
-                yc = (box[0][1] + box[2][1]) / 2
-                altura = abs(box[2][1] - box[0][1])
-                if altura < CONFIG['tam_min_fonte']:
+                try:
+                    box = line[0]
+                    texto = line[1][0]
+                    conf = line[1][1]
+                    
+                    if conf < 0.3:  # Filtrar baixa confiança
+                        continue
+                    
+                    xc = (box[0][0] + box[2][0]) / 2
+                    yc = (box[0][1] + box[2][1]) / 2
+                    altura = abs(box[2][1] - box[0][1])
+                    
+                    if altura < CONFIG['tam_min_fonte']:
+                        continue
+                    
+                    textos.append({
+                        'x': float(xc), 'y': float(yc),
+                        'texto': str(texto),
+                        'tam': float(altura),
+                        'confianca': float(conf)
+                    })
+                except Exception as e:
+                    logger.debug(f"Erro ao processar linha OCR: {e}", extra={'modulo': 'M4'})
                     continue
-                textos.append({
-                    'x': xc, 'y': yc,
-                    'texto': texto,
-                    'tam': altura,
-                    'confianca': conf
-                })
-    except ImportError:
-        logger.info("PaddleOCR não instalado, tentando Tesseract...", extra={'modulo': 'M4'})
-        textos = extrair_textos_tesseract(imagem)
+        
+        if textos:
+            logger.info(f"PaddleOCR: {len(textos)} textos extraídos", extra={'modulo': 'M4'})
+            return to_native(textos)
+            
     except Exception as e:
-        logger.warning(f"Erro no OCR: {e}", extra={'modulo': 'M4'})
-        textos = extrair_textos_tesseract(imagem)
-    return to_native(textos)
-
-
-def extrair_textos_tesseract(imagem):
-    """Fallback usando Tesseract OCR."""
+        logger.warning(f"PaddleOCR falhou ({type(e).__name__}): {str(e)[:100]}", extra={'modulo': 'M4'})
+    
+    # Fallback: Tesseract
     try:
+        logger.info("Tentando Tesseract como fallback...", extra={'modulo': 'M4'})
         import pytesseract
+        
         if len(imagem.shape) == 3:
             gray = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
         else:
             gray = imagem
+        
         data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
-        textos = []
+        
         for i in range(len(data['text'])):
             txt = data['text'][i].strip()
             if not txt or int(data['conf'][i]) < 30:
                 continue
-            x = data['left'][i] + data['width'][i] / 2
-            y = data['top'][i] + data['height'][i] / 2
+            
+            x = float(data['left'][i] + data['width'][i] / 2)
+            y = float(data['top'][i] + data['height'][i] / 2)
+            
             textos.append({
                 'x': x, 'y': y,
                 'texto': txt,
-                'tam': data['height'][i],
+                'tam': float(data['height'][i]),
                 'confianca': int(data['conf'][i])
             })
-        return to_native(textos)
-    except ImportError:
-        logger.warning("Nem PaddleOCR nem pytesseract disponíveis", extra={'modulo': 'M4'})
-        return []
+        
+        if textos:
+            logger.info(f"Tesseract: {len(textos)} textos extraídos", extra={'modulo': 'M4'})
+            return to_native(textos)
+            
     except Exception as e:
-        logger.error(f"Erro Tesseract: {e}", extra={'modulo': 'M4'})
-        return []
+        logger.debug(f"Tesseract também falhou: {str(e)[:100]}", extra={'modulo': 'M4'})
+    
+    logger.warning("Nenhum OCR disponível - retornando lista vazia", extra={'modulo': 'M4'})
+    return []
 
 
 def extrair_emendas(binaria):
@@ -182,7 +212,7 @@ def extrair_emendas(binaria):
 
 
 def extrair_linhas_do_esqueleto(esqueleto):
-    """Converte imagem esqueletizada em segmentos de linha - VERSÃO FINAL BLINDADA."""
+    """Converte imagem esqueletizada em segmentos de linha."""
     linhas = []
     if esqueleto is None:
         return linhas
@@ -232,11 +262,10 @@ def detectar_simbolos(imagem_binaria, imagem_original=None):
     t1 = time.perf_counter()
     logger.debug(f"[Métrica] extrair_retangulos levou {t1-t0:.2f}s", extra={'modulo': 'M4'})
 
-    # O principal suspeito de OOM (Out Of Memory) e lentidão
     logger.info(">>> Iniciando OCR (processo pesado)...", extra={'modulo': 'M4'})
     textos = extrair_textos_ocr(imagem_original if imagem_original is not None else imagem_binaria)
     t2 = time.perf_counter()
-    logger.info(f">>> [Métrica Crítica] extrair_textos_ocr (Paddle/Tesseract) levou {t2-t1:.2f}s", extra={'modulo': 'M4'})
+    logger.info(f">>> [Métrica Crítica] extrair_textos_ocr levou {t2-t1:.2f}s ({len(textos)} textos)", extra={'modulo': 'M4'})
 
     curvas = extrair_emendas(imagem_binaria)
     t3 = time.perf_counter()
