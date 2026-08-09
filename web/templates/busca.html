@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}PEPERTILO 1.0 - Busca de Projetos{% endblock %}
+
+{% block content %}
+<section class="secao-busca">
+    <div class="cabecalho-pagina">
+        <h2>Buscar Projetos e Componentes</h2>
+        <p class="subtitulo">Pesquise por nome de arquivo, código de componente ou data de análise.</p>
+    </div>
+
+    <form action="/busca" method="GET" class="form-busca" id="formBusca">
+        <div class="campo-busca-grupo">
+            <input type="text" name="q" id="termoBusca" class="input-texto" placeholder="Digite o termo de busca (ex: ECU, Resistor, ATmega...)" value="{{ termo or '' }}" required>
+            <button type="submit" class="btn-principal">Pesquisar</button>
+        </div>
+
+        <div class="filtros-busca">
+            <div class="filtro-item">
+                <label for="filtroTipo">Tipo de Registro:</label>
+                <select name="tipo" id="filtroTipo" class="select-padrao">
+                    <option value="todos" {% if tipo == 'todos' %}selected{% endif %}>Todos</option>
+                    <option value="projeto" {% if tipo == 'projeto' %}selected{% endif %}>Projetos / Arquivos</option>
+                    <option value="componente" {% if tipo == 'componente' %}selected{% endif %}>Componentes</option>
+                </select>
+            </div>
+        </div>
+    </form>
+
+    <div class="resultados-container">
+        {% if termo %}
+            <h3>Resultados para "{{ termo }}"</h3>
+
+            {% if resultados %}
+            <div class="tabela-container">
+                <table class="tabela-dados">
+                    <thead>
+                        <tr>
+                            <th>Arquivo / Projeto</th>
+                            <th>Data de Processamento</th>
+                            <th>Status</th>
+                            <th>Ação</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in resultados %}
+                        <tr>
+                            <td><strong>{{ item.nome }}</strong></td>
+                            <td>{{ item.data }}</td>
+                            <td><span class="badge badge-sucesso">{{ item.status }}</span></td>
+                            <td>
+                                <a href="{{ url_for('resultado', id=item.id) }}" class="btn-secundario btn-sm">Ver Detalhes</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="sem-dados">Nenhum resultado encontrado para a sua pesquisa.</p>
+            {% endif %}
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/busca.js') }}"></script>
+{% endblock %}
