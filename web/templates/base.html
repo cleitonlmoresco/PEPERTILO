@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}PEPERTILO 1.0 - Sistema de Análise{% endblock %}</title>
+    
+    <!-- Link para a folha de estilos padrão -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/estilo.css') }}">
+    
+    <!-- Bloco para CSS adicional específico de cada página, se necessário -->
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Cabeçalho Principal -->
+    <header class="cabecalho-site">
+        <nav class="navbar container">
+            <div class="logo">
+                <a href="{{ url_for('index') }}">
+                    <h1>PEPERTILO <span>1.0</span></h1>
+                </a>
+            </div>
+            <ul class="menu-navegacao">
+                <li><a href="{{ url_for('index') }}">Início (Upload)</a></li>
+                <!-- A rota 'busca' dependerá de como configuraremos o app.py no M8 -->
+                <li><a href="/busca">Buscar Projetos</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <!-- Área principal onde o conteúdo de cada página será injetado -->
+    <main class="conteudo-principal container">
+        <!-- Exibição de mensagens de alerta (Flash messages do Flask) -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="alertas-container">
+                    {% for category, message in messages %}
+                        <div class="alerta alerta-{{ category }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <!-- Conteúdo específico da página -->
+        {% block content %}
+        {% endblock %}
+    </main>
+
+    <!-- Rodapé -->
+    <footer class="rodape-site">
+        <div class="container">
+            <p>&copy; 2026 PEPERTILO - Sistema Integrado de Leitura e Restauração.</p>
+        </div>
+    </footer>
+
+    <!-- Bloco para scripts JavaScript adicionais específicos de cada página -->
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
