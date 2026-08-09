@@ -200,19 +200,36 @@ def processar_pdf_rasterizado(caminho_pdf):
         if not dados_paginas:
             return {'status': 'erro', 'mensagem': 'Nenhuma página processada'}
 
-        if len(dados_paginas) > 1:
-            conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_paginas)
-        else:
-            primeira_pagina = next(iter(dados_paginas.values()))
-            conexoes, G, pinos, perifs = processar_diagrama(primeira_pagina)
+        # Consolidar dados de múltiplas páginas
+        try:
+            if len(dados_paginas) > 1:
+                logger.info(f"Processando {len(dados_paginas)} páginas com grafo multipágina...", extra={'modulo': 'Roteador'})
+                conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_paginas)
+            else:
+                primeira_pagina = next(iter(dados_paginas.values()))
+                logger.info("Processando página única com grafo...", extra={'modulo': 'Roteador'})
+                conexoes, G, pinos, perifs = processar_diagrama(primeira_pagina)
 
-        return {
-            'status': 'ok',
-            'modulo': 'M5',
-            'conexoes': to_native(conexoes),
-            'num_conexoes': int(len(conexoes)),
-            'num_paginas': int(len(dados_paginas))
-        }
+            return {
+                'status': 'ok',
+                'modulo': 'M5',
+                'conexoes': to_native(conexoes),
+                'num_conexoes': int(len(conexoes)),
+                'num_pinos': int(len(pinos)),
+                'num_paginas': int(len(dados_paginas))
+            }
+        except Exception as e:
+            logger.error(f"Erro ao processar grafo: {e}\n{traceback.format_exc()}", extra={'modulo': 'Roteador'})
+            # Retornar resultado parcial com dados de páginas individuais
+            return {
+                'status': 'ok',
+                'modulo': 'M4',
+                'conexoes': [],
+                'num_conexoes': 0,
+                'num_pinos': 0,
+                'num_paginas': int(len(dados_paginas)),
+                'mensagem': 'PDF processado mas grafo não foi gerado'
+            }
 
     except Exception as e:
         logger.error(f"Erro no processamento rasterizado: {e}\n{traceback.format_exc()}", extra={'modulo': 'Roteador'})
