@@ -1,0 +1,47 @@
+# Python / Compilação
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Ambientes Virtuais
+venv/
+env/
+ENV/
+.venv/
+
+# Logs e Arquivos Temporários
+logs/
+*.log
+uploads/
+temp/
+exports/
+*.xlsx
+
+# Configurações de IDE e Sistema Operacional
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Variáveis de Ambiente e Segredos
+.env
+.env.local
