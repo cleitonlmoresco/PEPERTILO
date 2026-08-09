@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}PEPERTILO 1.0 - Resultado da Análise{% endblock %}
+
+{% block content %}
+<section class="secao-resultado">
+    <div class="cabecalho-pagina flex-between">
+        <div>
+            <h2>Resultado da Análise</h2>
+            <p class="subtitulo">Arquivo: <strong>{{ arquivo_nome }}</strong></p>
+        </div>
+        <a href="{{ url_for('index') }}" class="btn-secundario">&larr; Processar Novo Arquivo</a>
+    </div>
+
+    <!-- Resumo do Status -->
+    <div class="cards-resumo">
+        <div class="card-status status-{{ status }}">
+            <h4>Status do Processamento</h4>
+            <p class="valor">{{ status | upper }}</p>
+        </div>
+        <div class="card-status">
+            <h4>Componentes Detectados</h4>
+            <p class="valor">{{ total_componentes or 0 }}</p>
+        </div>
+        <div class="card-status">
+            <h4>Erros / Avisos</h4>
+            <p class="valor">{{ total_erros or 0 }} / {{ total_avisos or 0 }}</p>
+        </div>
+    </div>
+
+    <!-- Seção de Ações e Downloads -->
+    {% if relatorio_excel %}
+    <div class="caixa-destaque">
+        <h3>Exportação Concluída</h3>
+        <p>A planilha detalhada do circuito foi gerada com sucesso.</p>
+        <a href="{{ url_for('download_excel', filename=relatorio_excel) }}" class="btn-principal">
+            Baixar Planilha Excel (.xlsx)
+        </a>
+    </div>
+    {% endif %}
+
+    <!-- Tabela de Componentes Identificados -->
+    <div class="painel-tabela">
+        <h3>Componentes e Conexões Identificadas</h3>
+        {% if componentes %}
+        <div class="tabela-container">
+            <table class="tabela-dados">
+                <thead>
+                    <tr>
+                        <th>ID / Ref</th>
+                        <th>Tipo / Símbolo</th>
+                        <th>Valor / Especificação</th>
+                        <th>Datasheet</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for comp in componentes %}
+                    <tr>
+                        <td>{{ comp.id }}</td>
+                        <td>{{ comp.tipo }}</td>
+                        <td>{{ comp.valor or 'N/A' }}</td>
+                        <td>
+                            {% if comp.datasheet %}
+                            <a href="{{ comp.datasheet }}" target="_blank" class="link-datasheet">Ver Datasheet</a>
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="sem-dados">Nenhum componente foi identificado no arquivo enviado.</p>
+        {% endif %}
+    </div>
+
+    <!-- Seção de Logs e Ocorrências -->
+    {% if resumo_erros and (resumo_erros.erros or resumo_erros.avisos) %}
+    <div class="painel-logs">
+        <h3>Relatório de Ocorrências (M0 - Logger)</h3>
+        
+        {% if resumo_erros.erros %}
+        <div class="grupo-logs">
+            <h4 class="texto-erro">Erros Registrados</h4>
+            <ul>
+                {% for erro in resumo_erros.erros %}
+                <li>
+                    <span class="badge badge-erro">{{ erro.severidade }}</span>
+                    <strong>[{{ erro.modulo }}]</strong> {{ erro.mensagem }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        {% if resumo_erros.avisos %}
+        <div class="grupo-logs">
+            <h4 class="texto-aviso">Avisos</h4>
+            <ul>
+                {% for aviso in resumo_erros.avisos %}
+                <li>
+                    <span class="badge badge-aviso">Aviso</span>
+                    {{ aviso.mensagem }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/visualizador.js') }}"></script>
+{% endblock %}
