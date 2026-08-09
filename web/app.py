@@ -47,12 +47,14 @@ def allowed_file(filename):
     """Verifica se a extensão do arquivo é permitida."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def criar_job(arquivos, nome_modulo=''):
+def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None):
     """Cria um registro de job para acompanhamento."""
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
         'id': job_id,
         'arquivos': arquivos,
+        'caminhos': caminhos,  # CORRIGIDO: inicializar aqui
+        'caminho_datasheet': caminho_datasheet,
         'nome_modulo': nome_modulo,
         'status': 'aguardando',
         'progresso': 0,
@@ -83,9 +85,18 @@ def processar_job_assincrono(job_id):
         try:
             atualizar_job(job_id, status='processando', etapa='Classificando arquivo')
 
-            caminho_principal = job['caminhos'][0] if job.get('caminhos') else None
-            if not caminho_principal:
+            caminhos = job.get('caminhos', [])
+            if not caminhos or len(caminhos) == 0:
                 raise ErroPipeline("Nenhum arquivo para processar", severidade=Severidade.CRITICA)
+
+            caminho_principal = caminhos[0]
+
+            # Validar que o arquivo existe
+            if not Path(caminho_principal).exists():
+                raise ErroPipeline(
+                    f"Arquivo não encontrado: {caminho_principal}",
+                    severidade=Severidade.CRITICA
+                )
 
             # Módulo 1 - Roteamento
             atualizar_job(job_id, progresso=10, etapa='Extraindo dados')
@@ -102,10 +113,11 @@ def processar_job_assincrono(job_id):
 
             # Se houver datasheet, processar Módulo 6
             funcoes = None
-            if job.get('caminho_datasheet'):
+            caminho_ds = job.get('caminho_datasheet')
+            if caminho_ds and Path(caminho_ds).exists():
                 from extracao_datasheet import extrair_datasheet
                 try:
-                    funcoes = extrair_datasheet(job['caminho_datasheet'])
+                    funcoes = extrair_datasheet(caminho_ds)
                 except Exception as e:
                     logger.warning(f"Erro no datasheet: {e}")
 
@@ -175,17 +187,16 @@ def upload():
 
     # Validar e salvar arquivos
     caminhos = []
+    nomes_originais = []
     for file in arquivos_enviados:
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             nome_unico = f"{uuid.uuid4().hex[:8]}_{filename}"
             caminho = UPLOAD_FOLDER / nome_unico
             file.save(str(caminho))
-            caminhos.append({
-                'original': file.filename,
-                'caminho': str(caminho),
-                'tamanho': os.path.getsize(caminho)
-            })
+            caminhos.append(str(caminho))
+            nomes_originais.append(file.filename)
+            logger.info(f"Arquivo salvo: {caminho}")
 
     caminho_ds = None
     if datasheet and datasheet.filename and allowed_file(datasheet.filename):
@@ -194,13 +205,18 @@ def upload():
         caminho_ds = UPLOAD_FOLDER / nome_ds
         datasheet.save(str(caminho_ds))
         caminho_ds = str(caminho_ds)
+        logger.info(f"Datasheet salvo: {caminho_ds}")
 
     if not caminhos:
         return jsonify({'erro': 'Nenhum arquivo válido'}), 400
 
-    job_id = criar_job([c['original'] for c in caminhos], nome_modulo)
-    jobs[job_id]['caminhos'] = [c['caminho'] for c in caminhos]
-    jobs[job_id]['caminho_datasheet'] = caminho_ds
+    # CORRIGIDO: passar todos os parâmetros na criação
+    job_id = criar_job(
+        arquivos=nomes_originais,
+        caminhos=caminhos,
+        nome_modulo=nome_modulo,
+        caminho_datasheet=caminho_ds
+    )
 
     processar_job_assincrono(job_id)
 
