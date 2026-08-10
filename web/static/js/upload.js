@@ -1,4 +1,3 @@
-
 document.addEventListener('DOMContentLoaded', () => {
     const areaDrop = document.getElementById('areaDrop');
     const inputArquivo = document.getElementById('arquivo');
@@ -10,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (!areaDrop || !inputArquivo) return;
 
-    // Arrastar e Soltar (Drag & Drop)
+    // Drag & Drop
     ['dragenter', 'dragover'].forEach(eventName => {
         areaDrop.addEventListener(eventName, (e) => {
             e.preventDefault();
@@ -27,42 +26,36 @@ document.addEventListener('DOMContentLoaded', () => {
         }, false);
     });
 
-    // Evento de soltar o arquivo
     areaDrop.addEventListener('drop', (e) => {
         const dt = e.dataTransfer;
         const files = dt.files;
         if (files.length > 0) {
             inputArquivo.files = files;
-            atualizarExibicaoArquivo(files[0]);
+            atualizarExibicaoArquivo(files);
         }
     });
 
-    // Evento de seleção normal pelo botão
     inputArquivo.addEventListener('change', () => {
         if (inputArquivo.files.length > 0) {
-            atualizarExibicaoArquivo(inputArquivo.files[0]);
+            atualizarExibicaoArquivo(inputArquivo.files);
         }
     });
 
-    // Remover arquivo selecionado
-    if (btnRemoverArquivo) {
-        btnRemoverArquivo.addEventListener('click', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            inputArquivo.value = '';
-            infoArquivo.classList.add('oculto');
-            nomeArquivo.textContent = '';
-        });
+    btnRemoverArquivo?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        inputArquivo.value = '';
+        infoArquivo.classList.add('oculto');
+        nomeArquivo.textContent = '';
+    });
+
+    function atualizarExibicaoArquivo(files) {
+        const nomes = Array.from(files).map(f => f.name).join(', ');
+        nomeArquivo.textContent = nomes || 'Nenhum arquivo';
+        infoArquivo.classList.remove('oculto');
     }
 
-    function atualizarExibicaoArquivo(file) {
-        if (nomeArquivo && infoArquivo) {
-            nomeArquivo.textContent = file.name;
-            infoArquivo.classList.remove('oculto');
-        }
-    }
-
-    // Seleção visual do card de modo
+    // Seleção visual dos modos
     cardsModo.forEach(card => {
         card.addEventListener('click', () => {
             cardsModo.forEach(c => c.classList.remove('ativo'));
@@ -72,19 +65,45 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Validação e feedback no envio
-    if (formUpload) {
-        formUpload.addEventListener('submit', (e) => {
-            if (!inputArquivo.files.length) {
-                e.preventDefault();
-                alert('Por favor, selecione um arquivo antes de iniciar a análise.');
-                return;
+    // Intercepta o envio do formulário
+    formUpload.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        if (!inputArquivo.files.length) {
+            alert('Por favor, selecione pelo menos um arquivo.');
+            return;
+        }
+
+        const btnEnviar = document.getElementById('btnEnviar');
+        btnEnviar.disabled = true;
+        btnEnviar.innerHTML = '<span>Enviando...</span>';
+
+        const formData = new FormData(formUpload);
+
+        try {
+            const response = await fetch(formUpload.action, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error(`Erro HTTP: ${response.status}`);
             }
-            const btnEnviar = document.getElementById('btnEnviar');
-            if (btnEnviar) {
-                btnEnviar.disabled = true;
-                btnEnviar.innerHTML = '<span>Processando...</span>';
+
+            const data = await response.json();
+            if (data.job_id) {
+                // Redireciona para a tela de carregamento
+                window.location.href = `/carregamento/${data.job_id}`;
+            } else {
+                alert('Erro: job_id não retornado.');
+                btnEnviar.disabled = false;
+                btnEnviar.innerHTML = '<span>Iniciar Análise</span>';
             }
-        });
-    }
+        } catch (err) {
+            console.error('Erro no upload:', err);
+            alert('Falha ao enviar o arquivo. Verifique o console.');
+            btnEnviar.disabled = false;
+            btnEnviar.innerHTML = '<span>Iniciar Análise</span>';
+        }
+    });
 });
