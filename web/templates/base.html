@@ -16,14 +16,13 @@
     <header class="cabecalho-site">
         <nav class="navbar container">
             <div class="logo">
-                <a href="{{ url_for('index') }}">
+                <a href="{{ url_for('modulo8.index') }}">
                     <h1>PEPERTILO <span>1.0</span></h1>
                 </a>
             </div>
             <ul class="menu-navegacao">
-                <li><a href="{{ url_for('index') }}">Início (Upload)</a></li>
-                <!-- A rota 'busca' dependerá de como configuraremos o app.py no M8 -->
-                <li><a href="/busca">Buscar Projetos</a></li>
+                <li><a href="{{ url_for('modulo8.index') }}">Início (Upload)</a></li>
+                <li><a href="{{ url_for('modulo8.busca') }}">Buscar Projetos</a></li>
             </ul>
         </nav>
     </header>
