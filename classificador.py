@@ -104,15 +104,15 @@ def analisar_conteudo_pdf(caminho_pdf):
             return 'vazio'
         
         # Se há muito texto e poucos desenhos -> manual
-        if total_texto > 500 and total_drawings < 15:
+        if total_texto > 300 and total_drawings < 20:
             return 'manual'
         
         # Se há muitos desenhos (linhas) -> diagrama
-        if total_drawings > 30:
+        if total_drawings > 50:
             return 'diagrama'
         
         # Caso misto: se mais texto que desenhos, é manual
-        if total_texto > total_drawings * 10:
+        if total_texto > total_drawings * 5:
             return 'manual'
         
         return 'misto'
