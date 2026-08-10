@@ -1,12 +1,11 @@
 """
 Módulo 1 - Classificação de Arquivos.
-Identifica o tipo de arquivo (PDF vetorial, PDF rasterizado, imagem, foto).
+Identifica o tipo de arquivo (PDF vetorial, PDF rasterizado, imagem, foto, manual).
 """
 
 import os
 import fitz
 from PIL import Image
-import numpy as np
 from logger_erros import logger, monitorar, ErroPipeline, Severidade, tratar_erro_controlado
 
 TIPOS_VALIDOS = {
@@ -14,11 +13,11 @@ TIPOS_VALIDOS = {
     'pdf_rasterizado': 'PDF escaneado (imagem)',
     'imagem_limpa': 'Imagem digitalizada ou captura limpa',
     'foto_celular': 'Foto de celular com distorções',
+    'manual': 'Documento de texto com tabelas (manual/datasheet)',
     'desconhecido': 'Tipo não identificado'
 }
 
 def get_tipo_arquivo(caminho):
-    """Retorna o tipo MIME básico baseado na extensão."""
     ext = os.path.splitext(caminho)[1].lower()
     if ext == '.pdf':
         return 'pdf'
@@ -30,10 +29,6 @@ def get_tipo_arquivo(caminho):
 
 @monitorar(modulo='M1')
 def possui_camada_vetorial(caminho_pdf, limiar_linhas=50):
-    """
-    Verifica se um PDF contém objetos vetoriais significativos.
-    Retorna True se o número médio de linhas por página > limiar_linhas.
-    """
     if not os.path.exists(caminho_pdf):
         raise ErroPipeline(f"Arquivo não encontrado: {caminho_pdf}", modulo='M1', severidade=Severidade.ALTA)
 
@@ -69,43 +64,53 @@ def possui_camada_vetorial(caminho_pdf, limiar_linhas=50):
 
 @monitorar(modulo='M1')
 def analisar_imagem(caminho_imagem):
-    """Extrai características básicas da imagem para diferenciar digitalização de foto."""
     if not os.path.exists(caminho_imagem):
         raise ErroPipeline(f"Imagem não encontrada: {caminho_imagem}", modulo='M1', severidade=Severidade.ALTA)
 
-    try:
-        img = Image.open(caminho_imagem)
-    except Exception as e:
-        raise ErroPipeline(f"Não foi possível abrir a imagem: {str(e)}", modulo='M1', severidade=Severidade.ALTA, causa=e)
+    with Image.open(caminho_imagem) as img:
+        largura, altura = img.size
+        proporcao = largura / altura
+        exif = img._getexif() if hasattr(img, '_getexif') else None
+        tem_exif = exif is not None
+        fabricante = ''
+        if tem_exif:
+            fabricante = exif.get(271, '')
 
-    largura, altura = img.size
-    proporcao = largura / altura
-
-    exif = img._getexif() if hasattr(img, '_getexif') else None
-    tem_exif = exif is not None
-    fabricante = ''
-    if tem_exif:
-        fabricante = exif.get(271, '')
-
-    provavel_foto = False
-    if tem_exif and any(marca in fabricante.lower() for marca in ['samsung', 'apple', 'xiaomi', 'motorola', 'lg']):
-        provavel_foto = True
-        logger.debug(f"EXIF indica foto: fabricante={fabricante}", extra={'modulo': 'M1'})
-    if abs(proporcao - 1.33) < 0.1 or abs(proporcao - 1.78) < 0.1:
-        provavel_foto = True
-        logger.debug(f"Proporção indica foto: {proporcao:.2f}", extra={'modulo': 'M1'})
+        provavel_foto = False
+        if tem_exif and any(marca in fabricante.lower() for marca in ['samsung', 'apple', 'xiaomi', 'motorola', 'lg']):
+            provavel_foto = True
+            logger.debug(f"EXIF indica foto: fabricante={fabricante}", extra={'modulo': 'M1'})
+        if abs(proporcao - 1.33) < 0.1 or abs(proporcao - 1.78) < 0.1:
+            provavel_foto = True
+            logger.debug(f"Proporção indica foto: {proporcao:.2f}", extra={'modulo': 'M1'})
 
     return {
         'largura': largura, 'altura': altura, 'proporcao': proporcao,
         'tem_exif': tem_exif, 'fabricante': fabricante, 'provavel_foto': provavel_foto
     }
 
+def analisar_conteudo_pdf(caminho_pdf):
+    """Pré-classificação: distingue diagrama de manual/documento texto."""
+    try:
+        doc = fitz.open(caminho_pdf)
+        total_texto = 0
+        total_drawings = 0
+        for page in doc:
+            total_texto += len(page.get_text().strip())
+            total_drawings += len(page.get_drawings())
+        doc.close()
+        if total_texto == 0 and total_drawings == 0:
+            return 'vazio'
+        if total_drawings > 0 and total_texto / (total_drawings + 1) < 50:  # heurística
+            return 'diagrama'
+        else:
+            return 'manual'
+    except Exception as e:
+        logger.warning(f"Erro na pré-classificação: {e}", extra={'modulo': 'M1'})
+        return 'desconhecido'
+
 @monitorar(modulo='M1')
 def classificar_arquivo(caminho_arquivo):
-    """
-    Classifica o arquivo em uma das categorias: pdf_vetorial, pdf_rasterizado,
-    imagem_limpa, foto_celular ou desconhecido.
-    """
     if not os.path.exists(caminho_arquivo):
         raise ErroPipeline(f"Arquivo não encontrado: {caminho_arquivo}", modulo='M1', severidade=Severidade.CRITICA)
 
@@ -116,7 +121,13 @@ def classificar_arquivo(caminho_arquivo):
         if possui_camada_vetorial(caminho_arquivo):
             return 'pdf_vetorial'
         else:
-            return 'pdf_rasterizado'
+            # Pré-classificação para decidir entre rasterizado (diagrama) ou manual
+            categoria = analisar_conteudo_pdf(caminho_arquivo)
+            if categoria == 'manual':
+                logger.info("PDF classificado como manual/datasheet", extra={'modulo': 'M1'})
+                return 'manual'
+            else:
+                return 'pdf_rasterizado'
     elif tipo_base == 'imagem':
         info, erro = tratar_erro_controlado(analisar_imagem, caminho_arquivo, valor_padrao={'provavel_foto': False}, modulo='M1')
         if erro:
@@ -128,7 +139,6 @@ def classificar_arquivo(caminho_arquivo):
     else:
         logger.warning(f"Tipo de arquivo não reconhecido: {caminho_arquivo}", extra={'modulo': 'M1'})
         return 'desconhecido'
-
 
 if __name__ == '__main__':
     import sys
