@@ -13,21 +13,22 @@ import os
 import warnings
 import pytesseract
 from logger_erros import logger, monitorar, ErroExtracao, ErroPipeline, Severidade
+from utils import to_native
 
-# Suprimir warnings de compatibilidade
+# Suprimir warnings
 warnings.filterwarnings('ignore')
 os.environ['FLAGS_enable_pir_api'] = '0'
 os.environ['FLAGS_enable_pir_in_executor'] = '0'
 os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
 
-# Configuração automática do caminho do Tesseract para Windows (Correção Lógica)
+# Configuração Tesseract
 if os.name == 'nt':
     caminho_tesseract = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     if os.path.exists(caminho_tesseract):
         pytesseract.pytesseract.tesseract_cmd = caminho_tesseract
 
 CONFIG = {
-    'area_min_componente': 500,
+    'area_min_componente': 300,      # reduzido para capturar retângulos menores
     'area_min_emenda': 10,
     'area_max_emenda': 200,
     'circularidade_min': 0.7,
@@ -37,172 +38,116 @@ CONFIG = {
 
 RE_PINO = re.compile(r'^[A-Z]\d{1,2}$')
 
+# Singleton PaddleOCR
+_ocr_instance = None
 
-def to_native(obj, depth=0):
-    """Converte QUALQUER objeto numpy para tipo Python nativo."""
-    if depth > 100:
-        return str(obj)
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, np.floating):
-        return float(obj)
-    if isinstance(obj, np.bool_):
-        return bool(obj)
-    if isinstance(obj, np.str_):
-        return str(obj)
-    if isinstance(obj, np.ndarray):
-        if obj.ndim == 0:
-            return to_native(obj.item(), depth + 1)
-        return [to_native(x, depth + 1) for x in obj.tolist()]
-    if isinstance(obj, dict):
-        return {to_native(k, depth + 1): to_native(v, depth + 1) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [to_native(x, depth + 1) for x in obj]
-    if isinstance(obj, tuple):
-        return tuple(to_native(x, depth + 1) for x in obj)
-    if hasattr(obj, 'item') and callable(obj.item):
+def get_paddle_ocr():
+    global _ocr_instance
+    if _ocr_instance is None:
         try:
-            return to_native(obj.item(), depth + 1)
-        except:
-            pass
-    return obj
-
+            from paddleocr import PaddleOCR
+            logger.info("Inicializando PaddleOCR (singleton)...", extra={'modulo': 'M4'})
+            _ocr_instance = PaddleOCR(use_angle_cls=True, lang='en')
+        except Exception as e:
+            logger.warning(f"PaddleOCR não disponível: {e}", extra={'modulo': 'M4'})
+            _ocr_instance = None
+    return _ocr_instance
 
 def extrair_retangulos(binaria, canvas):
-    """Encontra contornos fechados que representam componentes retangulares."""
-    resultado = cv2.findContours(binaria, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if len(resultado) == 2:
-        contours, _ = resultado
-    else:
-        _, contours, _ = resultado
-
+    # Aplica Canny para realçar bordas
+    bordas = cv2.Canny(binaria, 50, 150)
+    contornos, _ = cv2.findContours(bordas, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     retangulos = []
-    for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
-        area = w * h
-        if area < CONFIG['area_min_componente']:
-            continue
-        area_contorno = cv2.contourArea(cnt)
-        if area_contorno < area * 0.3:
-            continue
-        cx, cy = x + w/2, y + h/2
-        if not (canvas[0] <= cx <= canvas[2] and canvas[1] <= cy <= canvas[3]):
-            continue
-        retangulos.append({
-            'x0': float(x), 'y0': float(y),
-            'x1': float(x+w), 'y1': float(y+h),
-            'width': float(w), 'height': float(h),
-            'area': float(area)
-        })
+    for cnt in contornos:
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+        if len(approx) == 4:
+            x, y, w, h = cv2.boundingRect(cnt)
+            area = w * h
+            if area > CONFIG['area_min_componente']:
+                cx, cy = x + w/2, y + h/2
+                if not (canvas[0] <= cx <= canvas[2] and canvas[1] <= cy <= canvas[3]):
+                    continue
+                retangulos.append({
+                    'x0': float(x), 'y0': float(y),
+                    'x1': float(x+w), 'y1': float(y+h),
+                    'width': float(w), 'height': float(h),
+                    'area': float(area)
+                })
     return to_native(retangulos)
 
-
 def extrair_textos_ocr(imagem):
-    """Usa PaddleOCR ou Tesseract para extrair textos da imagem."""
     textos = []
     
-    # Tentar PaddleOCR primeiro
-    try:
-        from paddleocr import PaddleOCR
-        logger.info("Inicializando PaddleOCR...", extra={'modulo': 'M4'})
-        
-        # Desabilitar PIR internamente
-        os.environ['FLAGS_enable_pir_api'] = '1'
-        os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
-        
-        # Correção Lógica 1: Removido o argumento obsoleto 'use_gpu=False'
-        ocr = PaddleOCR(use_angle_cls=True, lang='en')
-        
-        if len(imagem.shape) == 2:
-            img_rgb = cv2.cvtColor(imagem, cv2.COLOR_GRAY2RGB)
-        else:
-            img_rgb = cv2.cvtColor(imagem, cv2.COLOR_BGR2RGB)
-        
-        resultado = ocr.ocr(img_rgb, cls=False)
-        
-        # Correção Lógica 2: Verificação explícita do '[None]' que o Paddle retorna quando não há texto
-        if resultado and resultado[0] is not None:
-            for line in resultado[0]:
-                try:
-                    box = line[0]
-                    texto = line[1][0]
-                    conf = line[1][1]
-                    
-                    if conf < 0.3:  # Filtrar baixa confiança
-                        continue
-                    
-                    xc = (box[0][0] + box[2][0]) / 2
-                    yc = (box[0][1] + box[2][1]) / 2
-                    altura = abs(box[2][1] - box[0][1])
-                    
-                    if altura < CONFIG['tam_min_fonte']:
-                        continue
-                    
-                    textos.append({
-                        'x': float(xc), 'y': float(yc),
-                        'texto': str(texto),
-                        'tam': float(altura),
-                        'confianca': float(conf)
-                    })
-                except Exception as e:
-                    logger.debug(f"Erro ao processar linha OCR: {e}", extra={'modulo': 'M4'})
-                    continue
-        
-        if textos:
-            logger.info(f"PaddleOCR: {len(textos)} textos extraídos", extra={'modulo': 'M4'})
-            return to_native(textos)
+    # Tentar PaddleOCR singleton
+    ocr = get_paddle_ocr()
+    if ocr is not None:
+        try:
+            if len(imagem.shape) == 2:
+                img_rgb = cv2.cvtColor(imagem, cv2.COLOR_GRAY2RGB)
+            else:
+                img_rgb = cv2.cvtColor(imagem, cv2.COLOR_BGR2RGB)
             
-    except Exception as e:
-        logger.warning(f"PaddleOCR falhou ({type(e).__name__}): {str(e)[:100]}", extra={'modulo': 'M4'})
+            resultado = ocr.ocr(img_rgb, cls=False)
+            if resultado and resultado[0] is not None:
+                for line in resultado[0]:
+                    try:
+                        box = line[0]
+                        texto = line[1][0]
+                        conf = line[1][1]
+                        if conf < 0.3:
+                            continue
+                        xc = (box[0][0] + box[2][0]) / 2
+                        yc = (box[0][1] + box[2][1]) / 2
+                        altura = abs(box[2][1] - box[0][1])
+                        if altura < CONFIG['tam_min_fonte']:
+                            continue
+                        textos.append({
+                            'x': float(xc), 'y': float(yc),
+                            'texto': str(texto),
+                            'tam': float(altura),
+                            'confianca': float(conf)
+                        })
+                    except Exception as e:
+                        continue
+            if textos:
+                logger.info(f"PaddleOCR: {len(textos)} textos extraídos", extra={'modulo': 'M4'})
+                return to_native(textos)
+        except Exception as e:
+            logger.warning(f"PaddleOCR falhou: {str(e)[:100]}", extra={'modulo': 'M4'})
     
-    # Fallback: Tesseract
+    # Fallback Tesseract
     try:
-        logger.info("Tentando Tesseract como fallback...", extra={'modulo': 'M4'})
-        import pytesseract
-        
         if len(imagem.shape) == 3:
             gray = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
         else:
             gray = imagem
-        
         data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
-        
         for i in range(len(data['text'])):
             txt = data['text'][i].strip()
             if not txt or int(data['conf'][i]) < 30:
                 continue
-            
             x = float(data['left'][i] + data['width'][i] / 2)
             y = float(data['top'][i] + data['height'][i] / 2)
-            
             textos.append({
                 'x': x, 'y': y,
                 'texto': txt,
                 'tam': float(data['height'][i]),
                 'confianca': int(data['conf'][i])
             })
-        
         if textos:
             logger.info(f"Tesseract: {len(textos)} textos extraídos", extra={'modulo': 'M4'})
             return to_native(textos)
-            
     except Exception as e:
-        logger.debug(f"Tesseract também falhou: {str(e)[:100]}", extra={'modulo': 'M4'})
+        logger.debug(f"Tesseract falhou: {str(e)[:100]}", extra={'modulo': 'M4'})
     
     logger.warning("Nenhum OCR disponível - retornando lista vazia", extra={'modulo': 'M4'})
     return []
 
-
 def extrair_emendas(binaria):
-    """Detecta pequenos círculos que representam emendas (soldas)."""
-    resultado = cv2.findContours(binaria, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if len(resultado) == 2:
-        contours, _ = resultado
-    else:
-        _, contours, _ = resultado
-
+    contornos, _ = cv2.findContours(binaria, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     emendas = []
-    for cnt in contours:
+    for cnt in contornos:
         area = cv2.contourArea(cnt)
         if area < CONFIG['area_min_emenda'] or area > CONFIG['area_max_emenda']:
             continue
@@ -219,9 +164,7 @@ def extrair_emendas(binaria):
             emendas.append((float(cx), float(cy)))
     return to_native(emendas)
 
-
 def extrair_linhas_do_esqueleto(esqueleto):
-    """Converte imagem esqueletizada em segmentos de linha."""
     linhas = []
     if esqueleto is None:
         return linhas
@@ -234,7 +177,7 @@ def extrair_linhas_do_esqueleto(esqueleto):
             return linhas
 
         _, esqueleto = cv2.threshold(esqueleto, 127, 255, cv2.THRESH_BINARY)
-        lines = cv2.HoughLinesP(esqueleto, 1, np.pi/180, threshold=30, minLineLength=10, maxLineGap=5)
+        lines = cv2.HoughLinesP(esqueleto, 1, np.pi/180, threshold=20, minLineLength=5, maxLineGap=3)
 
         if lines is None:
             return linhas
@@ -254,10 +197,8 @@ def extrair_linhas_do_esqueleto(esqueleto):
 
     return to_native(linhas)
 
-
 @monitorar(modulo='M4')
 def detectar_simbolos(imagem_binaria, imagem_original=None):
-    """Detecta todos os símbolos na imagem binária restaurada com métricas de tempo."""
     if imagem_binaria is None:
         raise ErroExtracao("Imagem binária é None", severidade=Severidade.ALTA)
 
@@ -294,25 +235,20 @@ def detectar_simbolos(imagem_binaria, imagem_original=None):
     }
     return to_native(resultado)
 
-
 @monitorar(modulo='M4')
 def processar_imagem_restaurada(esqueleto, binaria, original=None):
-    """Processa a imagem restaurada e retorna estrutura blindada contra falhas."""
     logger.info(">>> Iniciando Módulo 4: Processamento de Imagem Restaurada...", extra={'modulo': 'M4'})
     t_inicio = time.perf_counter()
     
     try:
-        # Extração de Símbolos e Textos
         simbolos = detectar_simbolos(binaria, original)
         
-        # Extração de Linhas
         t_linhas_inicio = time.perf_counter()
         logger.info(">>> Iniciando extração de linhas (HoughLinesP)...", extra={'modulo': 'M4'})
         simbolos['linhas'] = extrair_linhas_do_esqueleto(esqueleto)
         t_linhas_fim = time.perf_counter()
         logger.debug(f"[Métrica] extrair_linhas_do_esqueleto levou {t_linhas_fim - t_linhas_inicio:.2f}s", extra={'modulo': 'M4'})
         
-        # Sanitização e Finalização
         resultado_final = to_native(simbolos)
         
         t_total = time.perf_counter() - t_inicio
@@ -329,7 +265,6 @@ def processar_imagem_restaurada(esqueleto, binaria, original=None):
             severidade=Severidade.CRITICA,
             causa=e
         )
-
 
 if __name__ == '__main__':
     import sys
