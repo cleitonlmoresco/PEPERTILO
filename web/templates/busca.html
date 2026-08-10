@@ -9,7 +9,7 @@
         <p class="subtitulo">Pesquise por nome de arquivo, código de componente ou data de análise.</p>
     </div>
 
-    <form action="/busca" method="GET" class="form-busca" id="formBusca">
+    <form action="{{ url_for('modulo8.busca') }}" method="GET" class="form-busca" id="formBusca">
         <div class="campo-busca-grupo">
             <input type="text" name="q" id="termoBusca" class="input-texto" placeholder="Digite o termo de busca (ex: ECU, Resistor, ATmega...)" value="{{ termo or '' }}" required>
             <button type="submit" class="btn-principal">Pesquisar</button>
@@ -49,7 +49,7 @@
                             <td>{{ item.data }}</td>
                             <td><span class="badge badge-sucesso">{{ item.status }}</span></td>
                             <td>
-                                <a href="{{ url_for('resultado', id=item.id) }}" class="btn-secundario btn-sm">Ver Detalhes</a>
+                                <a href="{{ url_for('modulo8.ver_resultado', job_id=item.id) }}" class="btn-secundario btn-sm">Ver Detalhes</a>
                             </td>
                         </tr>
                         {% endfor %}
