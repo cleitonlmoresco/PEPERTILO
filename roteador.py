@@ -43,7 +43,6 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
         doc.close()
         return {'status': 'erro', 'mensagem': 'PDF não contém páginas.'}
 
-    # Estrutura por página (primitivas, sem imagens)
     dados_por_pagina = {}
     pinos_mpu = []
     paginas_processadas = 0
@@ -66,7 +65,6 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             esqueleto, binaria = restaurar_imagem(img)
             dados_pagina = processar_imagem_restaurada(esqueleto, binaria, original=img)
 
-            # Guarda apenas as primitivas (não a imagem)
             dados_por_pagina[i+1] = {
                 'linhas': dados_pagina.get('linhas', []),
                 'textos': dados_pagina.get('textos', []),
@@ -79,13 +77,11 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
 
             paginas_processadas += 1
 
-            # Verificar MPU
             resultado_mpu = processar_modo_mpu(dados_pagina, ferramenta='CarProg_A10')
             if resultado_mpu.get('modo') == 'mpu':
                 logger.info(">>> MODO MPU ATIVADO <<<", extra={'modulo': 'MPU'})
                 pinos_mpu.extend(resultado_mpu.get('pinos', []))
 
-            # Liberar memória
             del img, esqueleto, binaria, dados_pagina
 
         except Exception as e:
@@ -100,7 +96,6 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
     if paginas_processadas == 0:
         return {'status': 'erro', 'mensagem': 'Nenhuma página processada com sucesso'}
 
-    # Se MPU foi detectado, retornar pinos
     if pinos_mpu:
         return {
             'status': 'ok',
@@ -112,11 +107,10 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             'ferramenta': 'CarProg_A10'
         }
 
-    # Verificar se é um manual (poucos retângulos) ou diagrama
     total_retangulos = sum(len(d['retangulos']) for d in dados_por_pagina.values())
     total_linhas = sum(len(d['linhas']) for d in dados_por_pagina.values())
 
-    # CORREÇÃO: Se for manual (poucos retângulos, muitas linhas ou muito texto), extrair datasheet
+    # Se for manual (poucos retângulos, muitas linhas ou muito texto), extrair datasheet
     if total_retangulos < 3 or total_linhas < 20:
         logger.warning("Poucos elementos gráficos - ativando modo DATASHEET/MANUAL", extra={'modulo': 'Roteador'})
         try:
@@ -134,7 +128,7 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
         except Exception as e:
             logger.error(f"Falha na extração automática de datasheet: {e}", extra={'modulo': 'Roteador'})
 
-    # Construir grafo usando as páginas separadas
+    # Construir grafo
     try:
         conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_por_pagina)
         return {
