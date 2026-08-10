@@ -1,7 +1,6 @@
 """
 Módulo 5 - Construção do Grafo Topológico e Rastreamento de Conexões.
-Recebe primitivas geométricas e retorna lista de conexões elétricas
-com suporte a múltiplas páginas (cross-page stitching).
+Recebe primitivas geométricas e retorna lista de conexões elétricas.
 """
 
 import math
@@ -9,8 +8,8 @@ import re
 from collections import deque
 import networkx as nx
 import numpy as np
-from logger_erros import (logger, monitorar, ErroGrafo, ErroPipeline,
-                          Severidade, ColetorErros, tratar_erro_controlado)
+from logger_erros import logger, monitorar, ErroGrafo, ErroPipeline, Severidade, ColetorErros
+from utils import to_native
 
 CONFIG = {
     'dist_max_no': 15.0,
@@ -25,16 +24,13 @@ RE_BITOLA = re.compile(r'^\d+\.?\d*\s*mm²$')
 RE_PINO = re.compile(r'^[A-Z]\d{1,2}$')
 RE_CONTINUACAO = re.compile(r'(?:Pág\.?\s*|Folha\s*|página\s*|continua\s+(?:na|para)?\s*(?:pág\.?|folha)?\s*)(\d+)', re.IGNORECASE)
 
-
 def ponto_em_retangulo(x, y, rect):
     return rect['x0'] <= x <= rect['x1'] and rect['y0'] <= y <= rect['y1']
-
 
 def ponto_perto_retangulo(x, y, rect, dist):
     x_min, x_max = rect['x0'] - dist, rect['x1'] + dist
     y_min, y_max = rect['y0'] - dist, rect['y1'] + dist
     return x_min <= x <= x_max and y_min <= y <= y_max
-
 
 def distancia_ponto_segmento(px, py, x1, y1, x2, y2):
     dx = x2 - x1
@@ -46,7 +42,6 @@ def distancia_ponto_segmento(px, py, x1, y1, x2, y2):
     projy = y1 + t * dy
     return math.hypot(px - projx, py - projy)
 
-
 def angulo_entre_vetores(v1, v2):
     dot = v1[0] * v2[0] + v1[1] * v2[1]
     m1 = math.hypot(*v1)
@@ -55,7 +50,6 @@ def angulo_entre_vetores(v1, v2):
         return 0
     cos = max(-1, min(1, dot / (m1 * m2)))
     return math.degrees(math.acos(cos))
-
 
 def encontrar_no_mais_proximo(G, pos, max_dist):
     melhor = None
@@ -67,13 +61,6 @@ def encontrar_no_mais_proximo(G, pos, max_dist):
                 dist_min = d
                 melhor = no
     return melhor
-
-
-def ponto_medio_aresta(G, u, v):
-    x1, y1 = G.nodes[u]['pos']
-    x2, y2 = G.nodes[v]['pos']
-    return (x1 + x2) / 2, (y1 + y2) / 2
-
 
 def identificar_ecu(retangulos, canvas):
     if not retangulos:
@@ -89,9 +76,8 @@ def identificar_ecu(retangulos, canvas):
         return area * fator
     ordenados = sorted(retangulos, key=pontuacao, reverse=True)
     ecu = ordenados[0]
-    perifericos = [r for r in ordenados[1:] if r['area'] > 500]
+    perifericos = [r for r in ordenados[1:] if r['area'] > 300]
     return ecu, perifericos
-
 
 def extrair_pinos_ecu(textos, ecu, altura_fonte):
     pinos = {}
@@ -100,7 +86,6 @@ def extrair_pinos_ecu(textos, ecu, altura_fonte):
         if RE_PINO.match(t['texto']) and ponto_perto_retangulo(t['x'], t['y'], ecu, dist_limite):
             pinos[t['texto']] = (t['x'], t['y'])
     return pinos
-
 
 def extrair_perifericos(textos, retangulos, ecu):
     perifericos = {}
@@ -123,7 +108,6 @@ def extrair_perifericos(textos, retangulos, ecu):
             perifericos[t['texto']] = (t['x'], t['y'])
     return perifericos
 
-
 def construir_grafo_pagina(linhas, pinos_ecu, perifericos, emendas, config):
     G = nx.Graph()
     for (x1, y1), (x2, y2) in linhas:
@@ -145,7 +129,6 @@ def construir_grafo_pagina(linhas, pinos_ecu, perifericos, emendas, config):
             G.add_edge(nome, no)
     classificar_nos(G, emendas, config)
     return G
-
 
 def classificar_nos(G, emendas, config):
     for no in list(G.nodes()):
@@ -178,7 +161,6 @@ def classificar_nos(G, emendas, config):
         else:
             G.nodes[no]['tipo'] = 'intermediario'
 
-
 def detectar_continuacoes(G, textos, num_pagina, config):
     for t in textos:
         match = RE_CONTINUACAO.search(t['texto'])
@@ -208,7 +190,6 @@ def detectar_continuacoes(G, textos, num_pagina, config):
                 G.nodes[no_prox]['pagina_destino'] = pagina_destino
                 G.nodes[no_prox]['pagina_origem'] = num_pagina
                 G.nodes[no_prox]['sinal'] = sinal
-
 
 def unificar_grafos(grafos_pagina):
     G_global = nx.Graph()
@@ -248,10 +229,9 @@ def unificar_grafos(grafos_pagina):
             logger.warning(f"Sem correspondência: pág {pag_orig} -> {pag_dest} (sinal: {sinal})", extra={'modulo': 'M5'})
     return G_global
 
-
-def bfs_rastrear_global(G_global, pinos_ecu_global, textos_por_pagina, config):
+def bfs_rastrear_global(G_global, pinos_iniciais, textos_por_pagina, config):
     conexoes = []
-    for pino, no_ini in pinos_ecu_global.items():
+    for pino, no_ini in pinos_iniciais.items():
         if no_ini not in G_global:
             continue
         visitados = set()
@@ -292,7 +272,6 @@ def bfs_rastrear_global(G_global, pinos_ecu_global, textos_por_pagina, config):
                     fila.append((viz, caminho_nos + [no], caminho_arestas + [(no, viz)]))
     return conexoes
 
-
 @monitorar(modulo='M5')
 def processar_diagrama_multipagina(dados_paginas):
     if not dados_paginas:
@@ -311,7 +290,7 @@ def processar_diagrama_multipagina(dados_paginas):
             emendas = dados.get('curvas', [])
             canvas = dados.get('canvas', (0, 0, 1000, 1000))
 
-            if len(linhas) < 5:
+            if len(linhas) < 3:
                 coletor.adicionar_aviso(f"Página {num_pag}: poucas linhas ({len(linhas)})")
 
             ecu, outros = identificar_ecu(retangulos, canvas)
@@ -349,10 +328,8 @@ def processar_diagrama_multipagina(dados_paginas):
     logger.info(f"Processamento concluído: {len(conexoes)} conexões em {len(grafos_pagina)} páginas", extra={'modulo': 'M5'})
     return conexoes, G_global, pinos_iniciais, {}
 
-
 def processar_diagrama(dados_pagina):
     return processar_diagrama_multipagina({1: dados_pagina})
-
 
 if __name__ == '__main__':
     import sys
