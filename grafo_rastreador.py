@@ -1,6 +1,5 @@
 """
 Módulo 5 - Construção do Grafo Topológico e Rastreamento de Conexões.
-Recebe primitivas geométricas e retorna lista de conexões elétricas.
 """
 
 import math
@@ -19,9 +18,10 @@ CONFIG = {
     'altura_fonte_padrao': 8,
 }
 
+# CORREÇÃO: Aceita números isolados, códigos alfanuméricos e nomes funcionais comuns
 RE_COR = re.compile(r'^[A-Z]{2}(/[A-Z]{2})?$')
 RE_BITOLA = re.compile(r'^\d+\.?\d*\s*mm²$')
-RE_PINO = re.compile(r'^[A-Z]\d{1,2}$')
+RE_PINO = re.compile(r'^([A-Z]\d{1,2}|\d+|[A-Z]{2,5}|[A-Z]{2,5}_?[HL]?)$')  # Aceita "1", "A1", "VDD", "GND", "BKGD", "CAN_H"
 RE_CONTINUACAO = re.compile(r'(?:Pág\.?\s*|Folha\s*|página\s*|continua\s+(?:na|para)?\s*(?:pág\.?|folha)?\s*)(\d+)', re.IGNORECASE)
 
 def ponto_em_retangulo(x, y, rect):
@@ -63,25 +63,31 @@ def encontrar_no_mais_proximo(G, pos, max_dist):
     return melhor
 
 def identificar_ecu(retangulos, canvas):
+    """
+    CORREÇÃO: Escolhe o maior retângulo que NÃO cobre a página inteira.
+    Em manuais, o chip geralmente é um retângulo com imagem.
+    """
     if not retangulos:
         return None, []
-    cx_canvas = (canvas[0] + canvas[2]) / 2
-    cy_canvas = (canvas[1] + canvas[3]) / 2
-    def pontuacao(rect):
-        area = rect['area']
-        cx_rect = (rect['x0'] + rect['x1']) / 2
-        cy_rect = (rect['y0'] + rect['y1']) / 2
-        dist_centro = math.hypot(cx_rect - cx_canvas, cy_rect - cy_canvas)
-        fator = 1 / (1 + dist_centro / max(canvas[2] - canvas[0], canvas[3] - canvas[1]))
-        return area * fator
-    ordenados = sorted(retangulos, key=pontuacao, reverse=True)
-    ecu = ordenados[0]
-    perifericos = [r for r in ordenados[1:] if r['area'] > 300]
-    return ecu, perifericos
+    
+    area_canvas = (canvas[2] - canvas[0]) * (canvas[3] - canvas[1])
+    if area_canvas <= 0:
+        return retangulos[0], retangulos[1:]
+    
+    # Ordenar por área decrescente
+    ordenados = sorted(retangulos, key=lambda r: r['area'], reverse=True)
+    
+    # Escolher o primeiro que não cobre mais de 60% da página
+    for rect in ordenados:
+        if rect['area'] < 0.6 * area_canvas:
+            return rect, [r for r in retangulos if r != rect]
+    
+    # Fallback: o maior
+    return ordenados[0], ordenados[1:]
 
 def extrair_pinos_ecu(textos, ecu, altura_fonte):
     pinos = {}
-    dist_limite = altura_fonte * 2.5
+    dist_limite = max(altura_fonte * 3, 30)  # CORREÇÃO: distância maior para capturar textos próximos
     for t in textos:
         if RE_PINO.match(t['texto']) and ponto_perto_retangulo(t['x'], t['y'], ecu, dist_limite):
             pinos[t['texto']] = (t['x'], t['y'])
