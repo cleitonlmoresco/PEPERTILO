@@ -6,56 +6,22 @@ de leitura perimetral para mapeamento de pinos.
 
 import re
 import numpy as np
-from logger_erros import (logger, monitorar, ErroPipeline, ErroExtracao,
-                          Severidade, ColetorErros, tratar_erro_controlado)
+from logger_erros import logger, monitorar, ErroPipeline, ErroExtracao, Severidade, ColetorErros
+from utils import to_native
 
-# ------------------------------------------------------------
-# Configurações
-# ------------------------------------------------------------
 CONFIG_MPU = {
-    'area_min_chip': 0.40,
-    'max_retangulos': 3,
+    'area_min_chip': 0.10,          # reduzido para capturar chips em manuais
+    'max_retangulos': 5,
     'margem_borda': 15,
-    'dist_texto_borda': 20,
+    'dist_texto_borda': 30,
     'confianca_minima': 50,
 }
-
-# ------------------------------------------------------------
-# Função sanitizadora
-# ------------------------------------------------------------
-def to_native(obj, depth=0):
-    if depth > 100:
-        return str(obj)
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, np.floating):
-        return float(obj)
-    if isinstance(obj, np.bool_):
-        return bool(obj)
-    if isinstance(obj, np.str_):
-        return str(obj)
-    if isinstance(obj, np.ndarray):
-        if obj.ndim == 0:
-            return to_native(obj.item(), depth + 1)
-        return [to_native(x, depth + 1) for x in obj.tolist()]
-    if isinstance(obj, dict):
-        return {to_native(k, depth + 1): to_native(v, depth + 1) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [to_native(x, depth + 1) for x in obj]
-    if isinstance(obj, tuple):
-        return tuple(to_native(x, depth + 1) for x in obj)
-    if hasattr(obj, 'item') and callable(obj.item):
-        try:
-            return to_native(obj.item(), depth + 1)
-        except:
-            pass
-    return obj
-
 
 REGEX_PINOS_FUNCIONAIS = re.compile(
     r'\b(RESET|BKGD|VDD|VSS|VDDR|VSSR|VDDX|VSSX|VDDPLL|VSSPLL|'
     r'EXTAL|XTAL|TXD|RXD|CAN|SCI|SPI|MISO|MOSI|SCK|SCL|SDA|'
-    r'BOOT|RST|VPP|VREF|VCC|GND|K.?LINE|LIN|IRQ|PD4|PD3|'
+    r'BOOT|RST|VPP|VREF|VCC|GND|K.?LINE|LIN|IRQ|PD[0-9]|'
+    r'[0-9]?S12|HC12|MC68HC912|F68K|4F73K|0K75F|0K13J|L26M|'
     r'\+5V|\+12V|VDD1|VDD2|VSS1|VSS2)\b',
     re.IGNORECASE
 )
@@ -114,12 +80,10 @@ FERRAMENTAS = {
     }
 }
 
-
 def normalizar_funcao(funcao):
     if not funcao:
         return ''
     return ALIAS_FUNCOES.get(funcao.upper(), funcao.upper())
-
 
 def obter_cor_fio(funcao, ferramenta_cores):
     if not funcao or not ferramenta_cores:
@@ -133,7 +97,6 @@ def obter_cor_fio(funcao, ferramenta_cores):
         if chave and (chave in funcao or funcao in chave):
             return cor
     return 'N/C'
-
 
 def determinar_lado_chip(x, y, chip_rect, dist_max):
     dist_topo = abs(y - chip_rect['y0'])
@@ -152,7 +115,6 @@ def determinar_lado_chip(x, y, chip_rect, dist_max):
     else:
         return 'DIREITA'
 
-
 def estimar_pino(x, y, lado, chip_rect):
     if lado in ('TOPO', 'BASE'):
         posicao_relativa = (x - chip_rect['x0']) / max(chip_rect['x1'] - chip_rect['x0'], 1)
@@ -167,7 +129,6 @@ def estimar_pino(x, y, lado, chip_rect):
         return int(posicao_relativa * 20) + 61
     else:
         return int((1 - posicao_relativa) * 20) + 81
-
 
 @monitorar(modulo='MPU')
 def detectar_modo_mpu(dados_pagina):
@@ -215,11 +176,10 @@ def detectar_modo_mpu(dados_pagina):
 
     if textos_perimetro == 0 and textos_interior == 0:
         return False, None
-    if textos_perimetro > textos_interior * 2:
+    if textos_perimetro > textos_interior * 1.5:
         logger.info(f"Modo MPU detectado: {textos_perimetro} textos no perímetro, {textos_interior} no interior")
         return True, maior
     return False, None
-
 
 @monitorar(modulo='MPU')
 def extrair_pinos_mpu(dados_pagina, chip_rect, ferramenta='CarProg_A10'):
@@ -302,7 +262,6 @@ def extrair_pinos_mpu(dados_pagina, chip_rect, ferramenta='CarProg_A10'):
             unicos.append(p)
 
     return to_native(unicos)
-
 
 @monitorar(modulo='MPU')
 def processar_modo_mpu(dados_pagina, ferramenta='CarProg_A10'):
