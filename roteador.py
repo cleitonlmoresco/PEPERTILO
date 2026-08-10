@@ -116,8 +116,11 @@ def processar_imagem_limpa(caminho_imagem):
 # ============================================================
 # PROCESSAR PDF RASTERIZADO (com detecção automática de MPU)
 # ============================================================
-def processar_pdf_rasterizado(caminho_pdf):
-    """Processa PDF rasterizado com detecção automática de Modo MPU."""
+def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
+    """
+    Processa PDF rasterizado com detecção automática de Modo MPU.
+    limite_paginas: 0 para processar todas as páginas.
+    """
     logger.info(">>> INICIANDO PROCESSAMENTO DO PDF...", extra={'modulo': 'Roteador'})
     try:
         import fitz
@@ -131,11 +134,21 @@ def processar_pdf_rasterizado(caminho_pdf):
             return {'status': 'erro', 'mensagem': 'PDF não contém páginas.'}
 
         for i, page in enumerate(doc):
+            # Correção Lógica: Quebra o laço apenas se houver um limite estipulado maior que zero
+            if limite_paginas > 0 and i >= limite_paginas:
+                logger.info(f"Limite de {limite_paginas} páginas atingido. Parando leitura.", extra={'modulo': 'Roteador'})
+                break
+                
             try:
+                logger.info(f">>> Extraindo página {i+1}/{total_paginas}", extra={'modulo': 'Roteador'})
+                
                 # Converter página para imagem
                 pix = page.get_pixmap(dpi=300)
                 img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+                # Correção Lógica: Salvar a extração bruta (original) para verificar como o PDF foi lido
+                cv2.imwrite(f"debug_pagina_{i+1}_original.png", img)
 
                 # Restauração e detecção de símbolos
                 esqueleto, binaria = restaurar_imagem(img)
