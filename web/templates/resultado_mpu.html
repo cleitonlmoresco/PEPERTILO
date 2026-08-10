@@ -1,115 +1,76 @@
 {% extends "base.html" %}
 
-{% block title %}PEPERTILO 1.0 - Resultado da Análise{% endblock %}
+{% block title %}PEPERTILO 1.0 - Resultado MPU{% endblock %}
 
 {% block content %}
 <section class="secao-resultado">
     <div class="cabecalho-pagina flex-between">
         <div>
-            <h2>Resultado da Análise</h2>
-            <p class="subtitulo">Arquivo: <strong>{{ arquivo_nome }}</strong></p>
+            <h2>Resultado da Análise MPU</h2>
+            <p class="subtitulo">Arquivo: <strong>{{ job.nome_modulo or 'MPU' }}</strong></p>
         </div>
-        <a href="{{ url_for('index') }}" class="btn-secundario">&larr; Processar Novo Arquivo</a>
+        <a href="{{ url_for('modulo8.index') }}" class="btn-secundario">&larr; Processar Novo Arquivo</a>
     </div>
 
-    <!-- Resumo do Status -->
+    <!-- Resumo -->
     <div class="cards-resumo">
-        <div class="card-status status-{{ status }}">
-            <h4>Status do Processamento</h4>
-            <p class="valor">{{ status | upper }}</p>
+        <div class="card-status status-{{ job.status }}">
+            <h4>Status</h4>
+            <p class="valor">{{ job.status | upper }}</p>
         </div>
         <div class="card-status">
-            <h4>Componentes Detectados</h4>
-            <p class="valor">{{ total_componentes or 0 }}</p>
+            <h4>Pinos Funcionais</h4>
+            <p class="valor">{{ resultado.num_pinos or 0 }}</p>
         </div>
         <div class="card-status">
-            <h4>Erros / Avisos</h4>
-            <p class="valor">{{ total_erros or 0 }} / {{ total_avisos or 0 }}</p>
+            <h4>Ferramenta</h4>
+            <p class="valor">{{ resultado.ferramenta or 'CarProg_A10' }}</p>
         </div>
     </div>
 
-    <!-- Seção de Ações e Downloads -->
-    {% if relatorio_excel %}
+    <!-- Download CSV -->
+    {% if resultado.pinos %}
     <div class="caixa-destaque">
-        <h3>Exportação Concluída</h3>
-        <p>A planilha detalhada do circuito foi gerada com sucesso.</p>
-        <a href="{{ url_for('download_excel', filename=relatorio_excel) }}" class="btn-principal">
-            Baixar Planilha Excel (.xlsx)
+        <h3>Exportação de Pinagem</h3>
+        <p>CSV com todos os pinos mapeados para a ferramenta selecionada.</p>
+        <a href="{{ url_for('modulo8.download_planilha', job_id=job.id) }}" class="btn-principal">
+            Baixar CSV de Pinagem
         </a>
     </div>
     {% endif %}
 
-    <!-- Tabela de Componentes Identificados -->
+    <!-- Tabela de Pinos -->
     <div class="painel-tabela">
-        <h3>Componentes e Conexões Identificadas</h3>
-        {% if componentes %}
+        <h3>Pinos Identificados</h3>
+        {% if resultado.pinos %}
         <div class="tabela-container">
             <table class="tabela-dados">
                 <thead>
                     <tr>
-                        <th>ID / Ref</th>
-                        <th>Tipo / Símbolo</th>
-                        <th>Valor / Especificação</th>
-                        <th>Datasheet</th>
+                        <th>Pino</th>
+                        <th>Lado</th>
+                        <th>Função</th>
+                        <th>Cor do Fio</th>
+                        <th>Confiança</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for comp in componentes %}
+                    {% for pino in resultado.pinos %}
                     <tr>
-                        <td>{{ comp.id }}</td>
-                        <td>{{ comp.tipo }}</td>
-                        <td>{{ comp.valor or 'N/A' }}</td>
-                        <td>
-                            {% if comp.datasheet %}
-                            <a href="{{ comp.datasheet }}" target="_blank" class="link-datasheet">Ver Datasheet</a>
-                            {% else %}
-                            -
-                            {% endif %}
-                        </td>
+                        <td>{{ pino.pino }}</td>
+                        <td>{{ pino.lado }}</td>
+                        <td>{{ pino.funcao }}</td>
+                        <td>{{ pino.cor_fio or 'N/C' }}</td>
+                        <td>{{ pino.confianca or 0 }}%</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
         {% else %}
-        <p class="sem-dados">Nenhum componente foi identificado no arquivo enviado.</p>
+        <p class="sem-dados">Nenhum pino funcional foi detectado.</p>
         {% endif %}
     </div>
-
-    <!-- Seção de Logs e Ocorrências -->
-    {% if resumo_erros and (resumo_erros.erros or resumo_erros.avisos) %}
-    <div class="painel-logs">
-        <h3>Relatório de Ocorrências (M0 - Logger)</h3>
-        
-        {% if resumo_erros.erros %}
-        <div class="grupo-logs">
-            <h4 class="texto-erro">Erros Registrados</h4>
-            <ul>
-                {% for erro in resumo_erros.erros %}
-                <li>
-                    <span class="badge badge-erro">{{ erro.severidade }}</span>
-                    <strong>[{{ erro.modulo }}]</strong> {{ erro.mensagem }}
-                </li>
-                {% endfor %}
-            </ul>
-        </div>
-        {% endif %}
-
-        {% if resumo_erros.avisos %}
-        <div class="grupo-logs">
-            <h4 class="texto-aviso">Avisos</h4>
-            <ul>
-                {% for aviso in resumo_erros.avisos %}
-                <li>
-                    <span class="badge badge-aviso">Aviso</span>
-                    {{ aviso.mensagem }}
-                </li>
-                {% endfor %}
-            </ul>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
 </section>
 {% endblock %}
 
