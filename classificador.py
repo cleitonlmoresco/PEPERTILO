@@ -28,7 +28,7 @@ def get_tipo_arquivo(caminho):
         return 'desconhecido'
 
 @monitorar(modulo='M1')
-def possui_camada_vetorial(caminho_pdf, limiar_linhas=50):
+def possui_camada_vetorial(caminho_pdf, limiar_linhas=30):
     if not os.path.exists(caminho_pdf):
         raise ErroPipeline(f"Arquivo não encontrado: {caminho_pdf}", modulo='M1', severidade=Severidade.ALTA)
 
@@ -57,7 +57,7 @@ def possui_camada_vetorial(caminho_pdf, limiar_linhas=50):
         logger.info("PDF não contém páginas com dados vetoriais", extra={'modulo': 'M1'})
         return False
 
-    media = total_linhas / paginas_com_dados
+    media = total_linhas / max(paginas_com_dados, 1)
     resultado = media >= limiar_linhas
     logger.debug(f"Média de linhas por página: {media:.1f} (limiar={limiar_linhas}) -> vetorial={resultado}", extra={'modulo': 'M1'})
     return resultado
@@ -99,12 +99,23 @@ def analisar_conteudo_pdf(caminho_pdf):
             total_texto += len(page.get_text().strip())
             total_drawings += len(page.get_drawings())
         doc.close()
+        
         if total_texto == 0 and total_drawings == 0:
             return 'vazio'
-        if total_drawings > 0 and total_texto / (total_drawings + 1) < 50:  # heurística
-            return 'diagrama'
-        else:
+        
+        # Se há muito texto e poucos desenhos -> manual
+        if total_texto > 500 and total_drawings < 15:
             return 'manual'
+        
+        # Se há muitos desenhos (linhas) -> diagrama
+        if total_drawings > 30:
+            return 'diagrama'
+        
+        # Caso misto: se mais texto que desenhos, é manual
+        if total_texto > total_drawings * 10:
+            return 'manual'
+        
+        return 'misto'
     except Exception as e:
         logger.warning(f"Erro na pré-classificação: {e}", extra={'modulo': 'M1'})
         return 'desconhecido'
@@ -121,7 +132,6 @@ def classificar_arquivo(caminho_arquivo):
         if possui_camada_vetorial(caminho_arquivo):
             return 'pdf_vetorial'
         else:
-            # Pré-classificação para decidir entre rasterizado (diagrama) ou manual
             categoria = analisar_conteudo_pdf(caminho_arquivo)
             if categoria == 'manual':
                 logger.info("PDF classificado como manual/datasheet", extra={'modulo': 'M1'})
