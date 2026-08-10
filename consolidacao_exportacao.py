@@ -22,20 +22,18 @@ COLUNAS = [
     'Observações'
 ]
 
-
 def _calcular_confianca(df):
     confianca = []
     for _, row in df.iterrows():
         score = 100.0
         if not row['Cor']:
-            score -= 25
-        if not row['Bitola']:
             score -= 15
+        if not row['Bitola']:
+            score -= 10
         if row['Função'] in ['Desconhecida', 'Não documentado', '']:
-            score -= 30
+            score -= 20
         confianca.append(max(score, 0))
     return confianca
-
 
 def _gerar_observacoes(df):
     observacoes = []
@@ -50,26 +48,13 @@ def _gerar_observacoes(df):
         observacoes.append('; '.join(obs) if obs else '')
     return observacoes
 
-
 @monitorar(modulo='M7')
 def consolidar_conexoes(conexoes, pin_func=None):
-    """
-    Converte a lista de conexões em um DataFrame enriquecido.
-
-    Args:
-        conexoes: list of tuples (pino, destino, cor, bitola)
-        pin_func: dict {pino: funcao} do Módulo 6, opcional
-
-    Returns:
-        pd.DataFrame com as colunas padronizadas.
-    """
     if not conexoes:
         logger.warning("Lista de conexões vazia", extra={'modulo': 'M7'})
         return pd.DataFrame(columns=COLUNAS)
 
     df = pd.DataFrame(conexoes, columns=['Pino', 'Destino', 'Cor', 'Bitola'])
-
-    # Renomeia a coluna 'Destino' para 'Componente Destino'
     df.rename(columns={'Destino': 'Componente Destino'}, inplace=True)
 
     if pin_func:
@@ -82,21 +67,14 @@ def consolidar_conexoes(conexoes, pin_func=None):
     df['Confiança (%)'] = _calcular_confianca(df)
     df['Observações'] = _gerar_observacoes(df)
 
-    # Garante que todas as colunas esperadas estejam presentes
     for col in COLUNAS:
         if col not in df.columns:
             df[col] = ''
 
     return df[COLUNAS]
 
-
 @monitorar(modulo='M7')
 def gerar_excel(df, caminho_saida='pinagem_ECU.xlsx'):
-    """
-    Gera um arquivo Excel com duas abas:
-    1. Pinagem Completa - todas as conexões
-    2. Modo Bancada - apenas pinos críticos
-    """
     if df.empty:
         raise ErroExportacao("DataFrame vazio, nada para exportar", severidade=Severidade.MEDIA)
 
@@ -117,13 +95,8 @@ def gerar_excel(df, caminho_saida='pinagem_ECU.xlsx'):
     logger.info(f"Planilha gerada: {caminho_saida} ({len(df_completa)} conexões)", extra={'modulo': 'M7'})
     return caminho_saida
 
-
 @monitorar(modulo='M7')
 def processar_e_exportar(conexoes, caminho_datasheet=None, saida='pinagem_ECU.xlsx'):
-    """
-    Fluxo completo: recebe conexões, opcionalmente extrai funções do datasheet
-    e gera o Excel.
-    """
     pin_func = None
     if caminho_datasheet:
         from extracao_datasheet import extrair_datasheet
@@ -134,7 +107,6 @@ def processar_e_exportar(conexoes, caminho_datasheet=None, saida='pinagem_ECU.xl
 
     df = consolidar_conexoes(conexoes, pin_func)
     return gerar_excel(df, saida)
-
 
 if __name__ == '__main__':
     conexoes_teste = [
