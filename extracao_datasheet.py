@@ -174,10 +174,6 @@ def _extrair_com_ocr(caminho_pdf):
 
 @monitorar(modulo='M6')
 def extrair_datasheet(caminho_pdf, limite_paginas=0):
-    """
-    Extrai a tabela de pinos de um datasheet.
-    Se falhar, tenta o fallback com M9 (Tesseract puro).
-    """
     if not caminho_pdf:
         raise ErroPipeline("Caminho do datasheet não informado", modulo='M6', severidade=Severidade.ALTA)
 
@@ -209,6 +205,8 @@ def extrair_datasheet(caminho_pdf, limite_paginas=0):
             from extracao_manual import extrair_manual_com_tesseract
             logger.info("M6 falhou. Tentando M9 (Tesseract puro)...", extra={'modulo': 'M6'})
             pin_func = extrair_manual_com_tesseract(caminho_pdf, limite_paginas)
+        except ImportError:
+            logger.warning("M9 não disponível (extracao_manual não encontrado)", extra={'modulo': 'M6'})
         except Exception as e:
             logger.warning(f"M9 também falhou: {e}", extra={'modulo': 'M6'})
 
