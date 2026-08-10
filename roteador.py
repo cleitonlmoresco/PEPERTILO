@@ -43,6 +43,12 @@ DEBUG_DIR = Path('debug')
 if DEBUG_MODE:
     DEBUG_DIR.mkdir(exist_ok=True)
 
+# M11 - específico para CarProg
+try:
+    from extracao_carprog import extrair_carprog
+    M11_DISPONIVEL = True
+except ImportError:
+    M11_DISPONIVEL = False
 # ============================================================
 # PROCESSAR PDF RASTERIZADO
 # ============================================================
@@ -144,6 +150,26 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             extra={'modulo': 'Roteador'}
         )
 
+        # ---- TENTATIVA 0: M11 (específico CarProg) ----
+        if M11_DISPONIVEL and "CarProg" in os.path.basename(caminho_pdf):
+            try:
+                logger.info(">>> Tentando M11 (extração específica CarProg)...", extra={'modulo': 'Roteador'})
+                pin_func = extrair_carprog(caminho_pdf, limite_paginas)
+                if pin_func:
+                    logger.info(f"M11 extraiu {len(pin_func)} funções", extra={'modulo': 'Roteador'})
+                    return {
+                        'status': 'ok',
+                        'modulo': 'M11',
+                        'funcoes': to_native(pin_func),
+                        'num_pinos': len(pin_func),
+                        'num_paginas': paginas_processadas,
+                        'mensagem': 'CarProg processado com M11 (regex)'
+                    }
+                else:
+                    logger.warning("M11 não extraiu funções.", extra={'modulo': 'Roteador'})
+            except Exception as e:
+                logger.error(f"M11 falhou: {e}", extra={'modulo': 'Roteador'})
+        
         # ---- TENTATIVA 1: M10 (específico para programadores) ----
         if M10_DISPONIVEL:
             try:
