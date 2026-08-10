@@ -20,7 +20,7 @@
         </div>
         <div class="card-status">
             <h4>Componentes Detectados</h4>
-            <p class="valor">{{ resultado.num_conexoes or 0 }}</p>
+            <p class="valor">{{ resultado.num_conexoes or resultado.num_pinos or 0 }}</p>
         </div>
         <div class="card-status">
             <h4>Erros / Avisos</h4>
@@ -29,20 +29,45 @@
     </div>
 
     <!-- Seção de Ações e Downloads -->
-    {% if resultado.conexoes %}
+    {% if resultado.conexoes or resultado.funcoes %}
     <div class="caixa-destaque">
         <h3>Exportação Concluída</h3>
-        <p>A planilha detalhada do circuito foi gerada com sucesso.</p>
+        <p>A análise do circuito foi concluída com sucesso.</p>
         <a href="{{ url_for('modulo8.download_planilha', job_id=job.id) }}" class="btn-principal">
             Baixar Planilha Excel (.xlsx)
         </a>
     </div>
     {% endif %}
 
-    <!-- Tabela de Conexões Identificadas -->
+    <!-- NOVA SEÇÃO: Funções de Pinos (Manual) -->
+    {% if resultado.funcoes %}
+    <div class="painel-tabela">
+        <h3>Funções de Pinos Extraídas (Manual/Datasheet)</h3>
+        <div class="tabela-container">
+            <table class="tabela-dados">
+                <thead>
+                    <tr>
+                        <th>Pino</th>
+                        <th>Função</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for pino, funcao in resultado.funcoes.items() %}
+                    <tr>
+                        <td>{{ pino }}</td>
+                        <td>{{ funcao }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Tabela de Conexões (Diagrama) -->
+    {% if resultado.conexoes %}
     <div class="painel-tabela">
         <h3>Conexões Identificadas</h3>
-        {% if resultado.conexoes %}
         <div class="tabela-container">
             <table class="tabela-dados">
                 <thead>
@@ -67,10 +92,18 @@
                 </tbody>
             </table>
         </div>
-        {% else %}
-        <p class="sem-dados">Nenhuma conexão foi identificada no arquivo enviado.</p>
-        {% endif %}
     </div>
+    {% endif %}
+
+    <!-- Mensagem se nada foi encontrado -->
+    {% if not resultado.conexoes and not resultado.funcoes %}
+    <div class="painel-tabela">
+        <p class="sem-dados">Nenhuma conexão ou função foi identificada no arquivo enviado.</p>
+        <p class="sem-dados" style="font-size:0.9rem; color: var(--text-secondary);">
+            Certifique-se de que o arquivo é um diagrama elétrico ou um manual com tabela de pinos.
+        </p>
+    </div>
+    {% endif %}
 
     <!-- Seção de Erros -->
     {% if job.erros %}
