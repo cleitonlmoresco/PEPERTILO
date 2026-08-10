@@ -8,12 +8,9 @@ import re
 import pdfplumber
 import tempfile
 import os
-from logger_erros import (logger, monitorar, ErroOCR, ErroPipeline,
-                          Severidade, tratar_erro_controlado, ColetorErros)
+from logger_erros import logger, monitorar, ErroOCR, ErroPipeline, Severidade, tratar_erro_controlado, ColetorErros
+from utils import to_native
 
-# ------------------------------------------------------------
-# Configurações de sinônimos para cabeçalhos de tabela
-# ------------------------------------------------------------
 SINONIMOS_PINO = [
     'pin', 'terminal', 'pino', 'pin no', 'pin number', 'nº', 'no.',
     'terminal no', 'connector pin'
@@ -23,7 +20,6 @@ SINONIMOS_FUNCAO = [
     'description', 'signal', 'sinal', 'nome', 'name', 'designation'
 ]
 
-# Mapeamento de siglas eletrônicas para linguagem de bancada
 MAPA_SIGLAS = {
     'VDD': 'Alimentação positiva',
     'VCC': 'Alimentação',
@@ -59,12 +55,7 @@ MAPA_SIGLAS = {
 
 RE_PINO_LIMPO = re.compile(r'[^A-Z0-9]')
 
-
-# ------------------------------------------------------------
-# Funções auxiliares
-# ------------------------------------------------------------
 def normalizar_cabecalho(cabecalho):
-    """Converte o cabeçalho para minúsculas e remove acentos básicos."""
     if not cabecalho:
         return ''
     cabecalho = str(cabecalho).lower().strip()
@@ -73,35 +64,24 @@ def normalizar_cabecalho(cabecalho):
         cabecalho = cabecalho.replace(char, repl)
     return cabecalho
 
-
 def encontrar_indice_coluna(cabecalho, sinonimos):
-    """Encontra o índice da coluna cujo cabeçalho corresponde a algum sinônimo."""
     for i, col in enumerate(cabecalho):
         col_norm = normalizar_cabecalho(col)
         if any(sin in col_norm for sin in sinonimos):
             return i
     return None
 
-
 def limpar_pino(pino_str):
-    """Limpa e normaliza o texto do pino."""
     return RE_PINO_LIMPO.sub('', str(pino_str).strip().upper())
 
-
 def expandir_siglas(texto):
-    """Traduz siglas técnicas para linguagem de bancada."""
     if not texto:
         return texto
     for sigla, traducao in sorted(MAPA_SIGLAS.items(), key=lambda x: len(x[0]), reverse=True):
         texto = re.sub(r'\b' + re.escape(sigla) + r'\b', traducao, texto, flags=re.IGNORECASE)
     return texto
 
-
-# ------------------------------------------------------------
-# Extração com pdfplumber
-# ------------------------------------------------------------
 def _extrair_com_pdfplumber(caminho_pdf):
-    """Extrai funções de pinos usando pdfplumber (tabelas texto)."""
     pin_func = {}
     with pdfplumber.open(caminho_pdf) as pdf:
         for page in pdf.pages:
@@ -121,31 +101,21 @@ def _extrair_com_pdfplumber(caminho_pdf):
                                 pin_func[pino] = func
     return pin_func
 
-
-# ------------------------------------------------------------
-# Extração com OCR (PaddleOCR / Tesseract)
-# ------------------------------------------------------------
 def _extrair_com_ocr(caminho_pdf):
-    """
-    Converte páginas para imagem e aplica OCR.
-    Usa arquivos temporários compatíveis com Windows/Linux.
-    """
     try:
         import fitz
+        from paddleocr import PaddleOCR
         doc = fitz.open(caminho_pdf)
         pin_func = {}
+        ocr = PaddleOCR(use_angle_cls=True, lang='en')
 
         for i, page in enumerate(doc):
             pix = page.get_pixmap(dpi=300)
-
-            # Cria arquivo temporário seguro para o sistema operacional
             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                 img_path = tmp.name
                 pix.save(img_path)
 
             try:
-                from paddleocr import PaddleOCR
-                ocr = PaddleOCR(use_angle_cls=True, lang='en')
                 resultado = ocr.ocr(img_path, cls=True)
                 if resultado and resultado[0]:
                     linhas_texto = []
@@ -192,36 +162,24 @@ def _extrair_com_ocr(caminho_pdf):
                                 func = textos[idx_func]
                                 if pino and func and len(pino) <= 5:
                                     pin_func[pino] = func
-            except ImportError:
-                logger.info("PaddleOCR não disponível no OCR fallback", extra={'modulo': 'M6'})
             except Exception as e:
                 logger.warning(f"Erro no OCR da página {i+1}: {e}", extra={'modulo': 'M6'})
             finally:
                 if os.path.exists(img_path):
                     os.remove(img_path)
-
         doc.close()
         return pin_func
     except Exception as e:
         raise ErroOCR(f"Falha no OCR: {str(e)}", causa=e)
 
-
-# ------------------------------------------------------------
-# Função principal
-# ------------------------------------------------------------
 @monitorar(modulo='M6')
 def extrair_datasheet(caminho_pdf):
-    """
-    Extrai a tabela de funções de pinos de um PDF de datasheet.
-    Retorna um dicionário {pino: função} com as siglas expandidas.
-    """
     if not caminho_pdf:
         raise ErroPipeline("Caminho do datasheet não informado", modulo='M6', severidade=Severidade.ALTA)
 
     pin_func = {}
     coletor = ColetorErros()
 
-    # Tentar pdfplumber primeiro
     resultado_plumber, erro_plumber = tratar_erro_controlado(
         _extrair_com_pdfplumber, caminho_pdf, valor_padrao={}, modulo='M6'
     )
@@ -230,7 +188,6 @@ def extrair_datasheet(caminho_pdf):
     else:
         pin_func.update(resultado_plumber)
 
-    # Se não extraiu nada, tentar OCR
     if not pin_func:
         resultado_ocr, erro_ocr = tratar_erro_controlado(
             _extrair_com_ocr, caminho_pdf, valor_padrao={}, modulo='M6'
@@ -240,7 +197,6 @@ def extrair_datasheet(caminho_pdf):
         else:
             pin_func.update(resultado_ocr)
 
-    # Expandir siglas técnicas
     for pino in pin_func:
         pin_func[pino] = expandir_siglas(pin_func[pino])
 
@@ -249,7 +205,6 @@ def extrair_datasheet(caminho_pdf):
 
     logger.info(f"Datasheet processado: {len(pin_func)} funções extraídas", extra={'modulo': 'M6'})
     return pin_func
-
 
 if __name__ == '__main__':
     import sys
