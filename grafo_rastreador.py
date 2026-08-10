@@ -20,7 +20,7 @@ CONFIG = {
 
 RE_COR = re.compile(r'^[A-Z]{2}(/[A-Z]{2})?$')
 RE_BITOLA = re.compile(r'^\d+\.?\d*\s*mm²$')
-RE_PINO = re.compile(r'^([A-Z]\d{1,2}|\d+|[A-Z]{2,5}|[A-Z]{2,5}_?[HL]?)$')  # CORRIGIDO
+RE_PINO = re.compile(r'^([A-Z]\d{1,2}|\d+|[A-Z]{2,5}|[A-Z]{2,5}_?[HL]?)$')
 RE_CONTINUACAO = re.compile(r'(?:Pág\.?\s*|Folha\s*|página\s*|continua\s+(?:na|para)?\s*(?:pág\.?|folha)?\s*)(\d+)', re.IGNORECASE)
 
 def ponto_em_retangulo(x, y, rect):
@@ -68,16 +68,19 @@ def identificar_ecu(retangulos, canvas):
     
     area_canvas = (canvas[2] - canvas[0]) * (canvas[3] - canvas[1])
     if area_canvas <= 0:
-        return retangulos[0], retangulos[1:]
+        return None, retangulos  # se canvas inválido, não força ECU
     
     ordenados = sorted(retangulos, key=lambda r: r['area'], reverse=True)
     for rect in ordenados:
         if rect['area'] < 0.6 * area_canvas:
             return rect, [r for r in retangulos if r != rect]
-    return ordenados[0], ordenados[1:]
+    # Se todos são muito grandes, pega o menor
+    return ordenados[-1] if ordenados else None, []
 
 def extrair_pinos_ecu(textos, ecu, altura_fonte):
     pinos = {}
+    if ecu is None:
+        return pinos
     dist_limite = max(altura_fonte * 3, 30)
     for t in textos:
         if RE_PINO.match(t['texto']) and ponto_perto_retangulo(t['x'], t['y'], ecu, dist_limite):
@@ -87,7 +90,7 @@ def extrair_pinos_ecu(textos, ecu, altura_fonte):
 def extrair_perifericos(textos, retangulos, ecu):
     perifericos = {}
     for rect in retangulos:
-        if rect == ecu:
+        if ecu and rect == ecu:
             continue
         cx = (rect['x0'] + rect['x1']) / 2
         cy = (rect['y0'] + rect['y1']) / 2
