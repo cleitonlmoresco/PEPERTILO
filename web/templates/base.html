@@ -4,15 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}PEPERTILO 1.0 - Sistema de Análise{% endblock %}</title>
-    
-    <!-- Link para a folha de estilos padrão -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/estilo.css') }}">
-    
-    <!-- Bloco para CSS adicional específico de cada página, se necessário -->
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <!-- Cabeçalho Principal -->
     <header class="cabecalho-site">
         <nav class="navbar container">
             <div class="logo">
@@ -27,9 +22,7 @@
         </nav>
     </header>
 
-    <!-- Área principal onde o conteúdo de cada página será injetado -->
     <main class="conteudo-principal container">
-        <!-- Exibição de mensagens de alerta (Flash messages do Flask) -->
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 <div class="alertas-container">
@@ -42,19 +35,15 @@
             {% endif %}
         {% endwith %}
 
-        <!-- Conteúdo específico da página -->
-        {% block content %}
-        {% endblock %}
+        {% block content %}{% endblock %}
     </main>
 
-    <!-- Rodapé -->
     <footer class="rodape-site">
         <div class="container">
             <p>&copy; 2026 PEPERTILO - Sistema Integrado de Leitura e Restauração.</p>
         </div>
     </footer>
 
-    <!-- Bloco para scripts JavaScript adicionais específicos de cada página -->
     {% block extra_js %}{% endblock %}
 </body>
 </html>
