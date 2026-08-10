@@ -20,7 +20,13 @@ from restauracao_img import restaurar_imagem
 from deteccao_simbolos import processar_imagem_restaurada
 from modo_mpu import processar_modo_mpu
 from extracao_datasheet import extrair_datasheet
-
+# M11 - específico para CarProg (SEM OCR)
+try:
+    from extracao_carprog import extrair_carprog
+    M11_DISPONIVEL = True
+except ImportError:
+    M11_DISPONIVEL = False
+    logger.warning("M11 (extracao_carprog) não disponível", extra={'modulo': 'Roteador'})
 # M9 - fallback simples com Tesseract
 try:
     from extracao_manual import extrair_manual_com_tesseract
@@ -43,12 +49,7 @@ DEBUG_DIR = Path('debug')
 if DEBUG_MODE:
     DEBUG_DIR.mkdir(exist_ok=True)
 
-# M11 - específico para CarProg
-try:
-    from extracao_carprog import extrair_carprog
-    M11_DISPONIVEL = True
-except ImportError:
-    M11_DISPONIVEL = False
+
 # ============================================================
 # PROCESSAR PDF RASTERIZADO
 # ============================================================
@@ -140,8 +141,8 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             'ferramenta': 'CarProg_A10'
         }
 
-    # ============================================================
-    # DETECÇÃO DE MANUAL - ORDEM PRIORIZADA: M10 → M6 → grafo
+      # ============================================================
+    # DETECÇÃO DE MANUAL - ORDEM: M11 → M10 → M6 → grafo
     # ============================================================
     if total_retangulos < 30 and total_textos > total_retangulos * 3:
         logger.warning(
@@ -150,10 +151,11 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             extra={'modulo': 'Roteador'}
         )
 
-        # ---- TENTATIVA 0: M11 (específico CarProg) ----
-        if M11_DISPONIVEL and "CarProg" in os.path.basename(caminho_pdf):
+        # ---- TENTATIVA 0: M11 (específico CarProg, SEM OCR) ----
+        nome_arquivo = os.path.basename(caminho_pdf)
+        if M11_DISPONIVEL and ("CarProg" in nome_arquivo or "HC12" in nome_arquivo or "9S12" in nome_arquivo):
             try:
-                logger.info(">>> Tentando M11 (extração específica CarProg)...", extra={'modulo': 'Roteador'})
+                logger.info(">>> Tentando M11 (extração específica CarProg, sem OCR)...", extra={'modulo': 'Roteador'})
                 pin_func = extrair_carprog(caminho_pdf, limite_paginas)
                 if pin_func:
                     logger.info(f"M11 extraiu {len(pin_func)} funções", extra={'modulo': 'Roteador'})
@@ -169,8 +171,8 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
                     logger.warning("M11 não extraiu funções.", extra={'modulo': 'Roteador'})
             except Exception as e:
                 logger.error(f"M11 falhou: {e}", extra={'modulo': 'Roteador'})
-        
-        # ---- TENTATIVA 1: M10 (específico para programadores) ----
+
+        # ---- TENTATIVA 1: M10 ----
         if M10_DISPONIVEL:
             try:
                 logger.info(">>> Tentando M10 (extração avançada para programadores)...", extra={'modulo': 'Roteador'})
@@ -217,7 +219,6 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             'mensagem': 'Arquivo parece ser um manual, mas não foi possível extrair a tabela de pinos.',
             'num_paginas': paginas_processadas
         }
-
     # ============================================================
     # SE NÃO É MANUAL, TENTA CONSTRUIR GRAFO (DIAGRAMA)
     # ============================================================
