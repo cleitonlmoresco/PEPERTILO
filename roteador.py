@@ -116,29 +116,28 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             'ferramenta': 'CarProg_A10'
         }
 
-    # NOVA LÓGICA: detectar manual automaticamente
-    # Se há muitos textos em comparação com retângulos, e poucos retângulos, é manual
+    # DETECÇÃO DE MANUAL: se há muitos textos e poucos retângulos
     if total_retangulos < 30 and total_textos > total_retangulos * 3:
-        logger.warning(f"Detectado possível manual: {total_textos} textos, {total_retangulos} retângulos. Ativando M6.", extra={'modulo': 'Roteador'})
+        logger.warning(f"Detectado possível manual: {total_textos} textos, {total_retangulos} retângulos. Ativando extração de datasheet.", extra={'modulo': 'Roteador'})
         try:
-            pin_func = extrair_datasheet(caminho_pdf)
+            # Chama M6 (que internamente já usa M9 como fallback)
+            pin_func = extrair_datasheet(caminho_pdf, limite_paginas)
             if pin_func:
-                logger.info(f"Datasheet extraído automaticamente: {len(pin_func)} funções", extra={'modulo': 'Roteador'})
+                logger.info(f"Extração manual concluída: {len(pin_func)} funções", extra={'modulo': 'Roteador'})
                 return {
                     'status': 'ok',
-                    'modulo': 'M6',
+                    'modulo': 'M9',  # ou M6, mas M9 indica que veio do Tesseract puro
                     'funcoes': to_native(pin_func),
                     'num_pinos': len(pin_func),
                     'num_paginas': paginas_processadas,
-                    'mensagem': 'Arquivo processado como datasheet (modo leve)'
+                    'mensagem': 'Manual processado com sucesso (M9/Tesseract)'
                 }
             else:
-                # Se não extraiu nada, ainda tenta construir grafo (fallback)
-                logger.warning("M6 não extraiu funções, tentando grafo...", extra={'modulo': 'Roteador'})
+                logger.warning("Nenhuma função extraída do manual.", extra={'modulo': 'Roteador'})
         except Exception as e:
-            logger.error(f"Falha na extração automática de datasheet: {e}", extra={'modulo': 'Roteador'})
+            logger.error(f"Falha na extração manual: {e}", extra={'modulo': 'Roteador'})
 
-    # Se não ativou M6 ou falhou, segue para grafo
+    # Se não ativou manual ou falhou, tenta construir grafo (diagrama)
     try:
         conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_por_pagina)
         return {
@@ -275,7 +274,7 @@ if __name__ == '__main__':
         if resultado['resultado']['status'] == 'ok':
             if resultado['resultado'].get('modo') == 'mpu':
                 print(f"Pinos MPU encontrados: {resultado['resultado']['num_pinos']}")
-            elif resultado['resultado'].get('modulo') == 'M6':
+            elif resultado['resultado'].get('modulo') in ('M6', 'M9'):
                 print(f"Funções de pinos extraídas: {resultado['resultado']['num_pinos']}")
             else:
                 print(f"Conexões encontradas: {resultado['resultado'].get('num_conexoes', 0)}")
