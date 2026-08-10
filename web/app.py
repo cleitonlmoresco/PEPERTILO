@@ -1,5 +1,5 @@
 """
-Módulo 8 - Interface Web (Servidor Flask).
+Módulo 8 - Interface Web (Servidor Flask) – versão com Blueprint.
 Fornece upload, processamento assíncrono, visualização interativa,
 correção manual, download de planilhas e busca inteligente.
 """
@@ -10,11 +10,11 @@ import uuid
 import json
 import tempfile
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from flask import (Flask, render_template, request, jsonify, send_file,
-                   redirect, url_for)
+from flask import (Blueprint, render_template, request, jsonify, send_file,
+                   redirect, url_for, current_app)
 from werkzeug.utils import secure_filename
 
 # Adiciona o diretório raiz ao path para importar os módulos do pipeline
@@ -24,28 +24,32 @@ from logger_erros import logger, ErroPipeline, Severidade
 from roteador import rotear_arquivo, TIPOS_VALIDOS
 
 # ------------------------------------------------------------
-# Configuração da aplicação
+# Criação do Blueprint
 # ------------------------------------------------------------
-app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'chave-secreta-oficina-2025')
+bp = Blueprint('modulo8', __name__, template_folder='templates')
+
+# ------------------------------------------------------------
+# Configurações (podem vir do app principal)
+# ------------------------------------------------------------
+def get_config(key, default):
+    return current_app.config.get(key, default) if current_app else default
 
 UPLOAD_FOLDER = Path(__file__).parent / 'uploads'
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 
-app.config['UPLOAD_FOLDER'] = str(UPLOAD_FOLDER)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100 MB
-
-ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'tiff', 'bmp', 'webp'}
-
-# Armazenamento de jobs em memória (em produção, usar banco de dados)
+# Dicionário global para armazenar jobs (em produção, use Redis ou BD)
 jobs = {}
+JOB_EXPIRATION_DAYS = 7  # dias para manter jobs concluídos/erro
 
 # ------------------------------------------------------------
 # Funções auxiliares
 # ------------------------------------------------------------
-def allowed_file(filename):
+def allowed_file(filename, allowed_extensions=None):
     """Verifica se a extensão do arquivo é permitida."""
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    if allowed_extensions is None:
+        allowed_extensions = {'pdf', 'png', 'jpg', 'jpeg', 'tiff', 'bmp', 'webp'}
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None):
     """Cria um registro de job para acompanhamento."""
@@ -53,7 +57,7 @@ def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None):
     jobs[job_id] = {
         'id': job_id,
         'arquivos': arquivos,
-        'caminhos': caminhos,  # CORRIGIDO: inicializar aqui
+        'caminhos': caminhos,
         'caminho_datasheet': caminho_datasheet,
         'nome_modulo': nome_modulo,
         'status': 'aguardando',
@@ -62,22 +66,36 @@ def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None):
         'resultado': None,
         'erros': [],
         'criado_em': datetime.now().isoformat(),
-        'concluido_em': None
+        'concluido_em': None,
+        'ultima_atualizacao': datetime.now().isoformat()
     }
     return job_id
 
 def atualizar_job(job_id, **kwargs):
-    """Atualiza os campos de um job."""
+    """Atualiza os campos de um job e registra a última atualização."""
     if job_id in jobs:
         jobs[job_id].update(kwargs)
+        jobs[job_id]['ultima_atualizacao'] = datetime.now().isoformat()
+
+def limpar_jobs_antigos():
+    """Remove jobs concluídos ou com erro que ultrapassaram o tempo de expiração."""
+    agora = datetime.now()
+    expiracao = timedelta(days=JOB_EXPIRATION_DAYS)
+    remover = []
+    for jid, job in jobs.items():
+        if job['status'] in ('concluido', 'erro'):
+            criado = datetime.fromisoformat(job['criado_em'])
+            if agora - criado > expiracao:
+                remover.append(jid)
+    for jid in remover:
+        del jobs[jid]
+        logger.info(f"Job {jid} removido por expiração")
 
 # ------------------------------------------------------------
 # Processamento assíncrono do job
 # ------------------------------------------------------------
 def processar_job_assincrono(job_id):
-    """
-    Processa o job em background usando thread separada.
-    """
+    """Processa o job em background usando thread separada."""
     def tarefa():
         job = jobs.get(job_id)
         if not job:
@@ -86,12 +104,11 @@ def processar_job_assincrono(job_id):
             atualizar_job(job_id, status='processando', etapa='Classificando arquivo')
 
             caminhos = job.get('caminhos', [])
-            if not caminhos or len(caminhos) == 0:
+            if not caminhos:
                 raise ErroPipeline("Nenhum arquivo para processar", severidade=Severidade.CRITICA)
 
             caminho_principal = caminhos[0]
 
-            # Validar que o arquivo existe
             if not Path(caminho_principal).exists():
                 raise ErroPipeline(
                     f"Arquivo não encontrado: {caminho_principal}",
@@ -153,7 +170,7 @@ def processar_job_assincrono(job_id):
                           etapa=f'Falha: {e.mensagem[:50]}',
                           erros=[e.to_dict()])
         except Exception as e:
-            logger.critical(f"Job {job_id} erro inesperado: {str(e)}")
+            logger.critical(f"Job {job_id} erro inesperado: {str(e)}", exc_info=True)
             atualizar_job(job_id,
                           status='erro',
                           etapa='Erro inesperado',
@@ -163,16 +180,17 @@ def processar_job_assincrono(job_id):
     thread.start()
 
 # ------------------------------------------------------------
-# Rotas da aplicação
+# Rotas do Blueprint
 # ------------------------------------------------------------
-@app.route('/')
+@bp.route('/')
 def index():
     """Dashboard principal."""
+    limpar_jobs_antigos()  # limpeza periódica
     return render_template('index.html',
                            jobs=list(jobs.values())[-20:],
                            tipos=TIPOS_VALIDOS)
 
-@app.route('/upload', methods=['POST'])
+@bp.route('/upload', methods=['POST'])
 def upload():
     """Endpoint de upload de arquivos."""
     if 'arquivos' not in request.files:
@@ -210,7 +228,6 @@ def upload():
     if not caminhos:
         return jsonify({'erro': 'Nenhum arquivo válido'}), 400
 
-    # CORRIGIDO: passar todos os parâmetros na criação
     job_id = criar_job(
         arquivos=nomes_originais,
         caminhos=caminhos,
@@ -222,7 +239,7 @@ def upload():
 
     return jsonify({'job_id': job_id, 'status': 'iniciado'})
 
-@app.route('/status/<job_id>')
+@bp.route('/status/<job_id>')
 def status_job(job_id):
     """Retorna o status atual de um job (para polling via AJAX)."""
     job = jobs.get(job_id)
@@ -236,22 +253,30 @@ def status_job(job_id):
         'erros': job.get('erros', [])
     })
 
-@app.route('/resultado/<job_id>')
+@bp.route('/jobs')
+def listar_jobs():
+    """Lista todos os jobs (para administração)."""
+    limpar_jobs_antigos()
+    return jsonify({jid: {
+        'status': j['status'],
+        'progresso': j['progresso'],
+        'criado_em': j['criado_em'],
+        'concluido_em': j['concluido_em']
+    } for jid, j in jobs.items()})
+
+@bp.route('/resultado/<job_id>')
 def ver_resultado(job_id):
     """Página de visualização interativa do resultado."""
     job = jobs.get(job_id)
     if not job or job['status'] != 'concluido':
-        return redirect(url_for('index'))
+        return redirect(url_for('modulo8.index'))
 
     resultado = job.get('resultado', {})
-
-    # Verificar se é resultado MPU
     if resultado.get('modo') == 'mpu':
         return render_template('resultado_mpu.html', job=job, resultado=resultado)
-
     return render_template('resultado.html', job=job, resultado=resultado)
 
-@app.route('/api/conexoes/<job_id>')
+@bp.route('/api/conexoes/<job_id>')
 def api_conexoes(job_id):
     """Retorna as conexões em JSON para o overlay interativo."""
     job = jobs.get(job_id)
@@ -273,7 +298,7 @@ def api_conexoes(job_id):
         })
     return jsonify({'conexoes': conexoes, 'total': len(conexoes)})
 
-@app.route('/api/corrigir/<job_id>', methods=['POST'])
+@bp.route('/api/corrigir/<job_id>', methods=['POST'])
 def api_corrigir(job_id):
     """Recebe correções manuais do visualizador e atualiza o resultado."""
     job = jobs.get(job_id)
@@ -303,7 +328,7 @@ def api_corrigir(job_id):
     except Exception as e:
         return jsonify({'erro': str(e)}), 500
 
-@app.route('/download/<job_id>')
+@bp.route('/download/<job_id>')
 def download_planilha(job_id):
     """Gera e envia a planilha Excel do resultado."""
     job = jobs.get(job_id)
@@ -312,15 +337,12 @@ def download_planilha(job_id):
 
     resultado = job.get('resultado', {})
 
-    # Se for resultado MPU, gerar CSV dos pinos
     if resultado.get('modo') == 'mpu':
         import csv
         import io
-
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(['Pino', 'Lado', 'Função', 'Cor do Fio', 'Ferramenta', 'Confiança'])
-
         for pino in resultado.get('pinos', []):
             writer.writerow([
                 pino.get('pino', ''),
@@ -330,7 +352,6 @@ def download_planilha(job_id):
                 pino.get('ferramenta', ''),
                 f"{pino.get('confianca', 0)}%"
             ])
-
         output.seek(0)
         nome_modulo = job.get('nome_modulo', 'MPU').replace(' ', '_')
         return send_file(
@@ -340,13 +361,11 @@ def download_planilha(job_id):
             download_name=f'pinos_{nome_modulo}.csv'
         )
 
-    # Resultado normal de diagrama elétrico
     conexoes = resultado.get('conexoes', [])
     if not conexoes:
         return jsonify({'erro': 'Nenhuma conexão para exportar'}), 400
 
     from consolidacao_exportacao import consolidar_conexoes, gerar_excel
-
     pin_func = resultado.get('funcoes', None)
     df = consolidar_conexoes(conexoes, pin_func)
 
@@ -358,12 +377,12 @@ def download_planilha(job_id):
                      as_attachment=True,
                      download_name=f'pinagem_{nome_modulo}.xlsx')
 
-@app.route('/busca')
+@bp.route('/busca')
 def busca():
     """Página de busca inteligente (RAG)."""
     return render_template('busca.html')
 
-@app.route('/api/buscar')
+@bp.route('/api/buscar')
 def api_buscar():
     """Endpoint de busca semântica (placeholder para RAG)."""
     query = request.args.get('q', '').strip()
@@ -383,7 +402,13 @@ def api_buscar():
                 })
     return jsonify({'resultados': resultados, 'total': len(resultados)})
 
-
+# ------------------------------------------------------------
+# Execução standalone (para testes)
+# ------------------------------------------------------------
 if __name__ == '__main__':
-    logger.info("Servidor web iniciado", extra={'modulo': 'M8', 'funcao': 'main'})
+    from flask import Flask
+    app = Flask(__name__)
+    app.register_blueprint(bp, url_prefix='/')
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'chave-secreta-oficina-2025')
+    logger.info("Servidor web iniciado (standalone)", extra={'modulo': 'M8', 'funcao': 'main'})
     app.run(debug=True, host='0.0.0.0', port=5000)
