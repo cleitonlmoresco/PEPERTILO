@@ -17,42 +17,29 @@ from flask import (Blueprint, render_template, request, jsonify, send_file,
                    redirect, url_for, current_app)
 from werkzeug.utils import secure_filename
 
-# Adiciona o diretório raiz ao path para importar os módulos do pipeline
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from logger_erros import logger, ErroPipeline, Severidade
 from roteador import rotear_arquivo, TIPOS_VALIDOS
 
-# ------------------------------------------------------------
-# Criação do Blueprint
-# ------------------------------------------------------------
 bp = Blueprint('modulo8', __name__, template_folder='templates')
 
-# ------------------------------------------------------------
-# Configurações (podem vir do app principal)
-# ------------------------------------------------------------
 def get_config(key, default):
     return current_app.config.get(key, default) if current_app else default
 
 UPLOAD_FOLDER = Path(__file__).parent / 'uploads'
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 
-# Dicionário global para armazenar jobs (em produção, use Redis ou BD)
 jobs = {}
-JOB_EXPIRATION_DAYS = 7  # dias para manter jobs concluídos/erro
+JOB_EXPIRATION_DAYS = 7
 
-# ------------------------------------------------------------
-# Funções auxiliares
-# ------------------------------------------------------------
 def allowed_file(filename, allowed_extensions=None):
-    """Verifica se a extensão do arquivo é permitida."""
     if allowed_extensions is None:
         allowed_extensions = {'pdf', 'png', 'jpg', 'jpeg', 'tiff', 'bmp', 'webp'}
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
-def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None):
-    """Cria um registro de job para acompanhamento."""
+def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None, limite_paginas=0):
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
         'id': job_id,
@@ -60,6 +47,7 @@ def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None):
         'caminhos': caminhos,
         'caminho_datasheet': caminho_datasheet,
         'nome_modulo': nome_modulo,
+        'limite_paginas': limite_paginas,
         'status': 'aguardando',
         'progresso': 0,
         'etapa': 'Na fila',
@@ -72,13 +60,11 @@ def criar_job(arquivos, caminhos, nome_modulo='', caminho_datasheet=None):
     return job_id
 
 def atualizar_job(job_id, **kwargs):
-    """Atualiza os campos de um job e registra a última atualização."""
     if job_id in jobs:
         jobs[job_id].update(kwargs)
         jobs[job_id]['ultima_atualizacao'] = datetime.now().isoformat()
 
 def limpar_jobs_antigos():
-    """Remove jobs concluídos ou com erro que ultrapassaram o tempo de expiração."""
     agora = datetime.now()
     expiracao = timedelta(days=JOB_EXPIRATION_DAYS)
     remover = []
@@ -91,11 +77,7 @@ def limpar_jobs_antigos():
         del jobs[jid]
         logger.info(f"Job {jid} removido por expiração")
 
-# ------------------------------------------------------------
-# Processamento assíncrono do job
-# ------------------------------------------------------------
 def processar_job_assincrono(job_id):
-    """Processa o job em background usando thread separada."""
     def tarefa():
         job = jobs.get(job_id)
         if not job:
@@ -108,16 +90,13 @@ def processar_job_assincrono(job_id):
                 raise ErroPipeline("Nenhum arquivo para processar", severidade=Severidade.CRITICA)
 
             caminho_principal = caminhos[0]
-
             if not Path(caminho_principal).exists():
-                raise ErroPipeline(
-                    f"Arquivo não encontrado: {caminho_principal}",
-                    severidade=Severidade.CRITICA
-                )
+                raise ErroPipeline(f"Arquivo não encontrado: {caminho_principal}", severidade=Severidade.CRITICA)
 
-            # Módulo 1 - Roteamento
+            limite = job.get('limite_paginas', 0)
+
             atualizar_job(job_id, progresso=10, etapa='Extraindo dados')
-            resultado_roteador = rotear_arquivo(caminho_principal)
+            resultado_roteador = rotear_arquivo(caminho_principal, limite_paginas=limite)
 
             if resultado_roteador['resultado']['status'] != 'ok':
                 raise ErroPipeline(
@@ -128,7 +107,6 @@ def processar_job_assincrono(job_id):
 
             atualizar_job(job_id, progresso=50, etapa='Montando grafo')
 
-            # Se houver datasheet, processar Módulo 6
             funcoes = None
             caminho_ds = job.get('caminho_datasheet')
             if caminho_ds and Path(caminho_ds).exists():
@@ -140,10 +118,10 @@ def processar_job_assincrono(job_id):
 
             atualizar_job(job_id, progresso=80, etapa='Gerando planilha')
 
-            # Consolidar resultado
             conexoes = resultado_roteador['resultado'].get('conexoes', [])
             pinos_mpu = resultado_roteador['resultado'].get('pinos', [])
             modo = resultado_roteador['resultado'].get('modo', '')
+            modulo = resultado_roteador['resultado'].get('modulo', '')
 
             resultado = {
                 'conexoes': conexoes,
@@ -152,8 +130,10 @@ def processar_job_assincrono(job_id):
                 'num_conexoes': len(conexoes),
                 'num_pinos': len(pinos_mpu),
                 'tipo': resultado_roteador['tipo'],
-                'modulo_processado': resultado_roteador['resultado'].get('modulo'),
-                'modo': modo
+                'modulo_processado': modulo,
+                'modo': modo,
+                'num_paginas': resultado_roteador['resultado'].get('num_paginas', 0),
+                'mensagem': resultado_roteador['resultado'].get('mensagem', '')
             }
 
             atualizar_job(job_id,
@@ -179,20 +159,16 @@ def processar_job_assincrono(job_id):
     thread = threading.Thread(target=tarefa, daemon=True)
     thread.start()
 
-# ------------------------------------------------------------
-# Rotas do Blueprint
-# ------------------------------------------------------------
+# Rotas
 @bp.route('/')
 def index():
-    """Dashboard principal."""
-    limpar_jobs_antigos()  # limpeza periódica
+    limpar_jobs_antigos()
     return render_template('index.html',
                            jobs=list(jobs.values())[-20:],
                            tipos=TIPOS_VALIDOS)
 
 @bp.route('/carregamento/<job_id>')
 def carregamento(job_id):
-    """Página de carregamento com polling automático."""
     job = jobs.get(job_id)
     if not job:
         return redirect(url_for('modulo8.index'))
@@ -200,18 +176,17 @@ def carregamento(job_id):
 
 @bp.route('/upload', methods=['POST'])
 def upload():
-    """Endpoint de upload de arquivos."""
     if 'arquivos' not in request.files:
         return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
 
     arquivos_enviados = request.files.getlist('arquivos')
     datasheet = request.files.get('datasheet')
     nome_modulo = request.form.get('nome_modulo', '').strip()
+    limite_paginas = request.form.get('limite_paginas', 0, type=int)
 
     if not arquivos_enviados or all(f.filename == '' for f in arquivos_enviados):
         return jsonify({'erro': 'Nenhum arquivo selecionado'}), 400
 
-    # Validar e salvar arquivos
     caminhos = []
     nomes_originais = []
     for file in arquivos_enviados:
@@ -240,16 +215,15 @@ def upload():
         arquivos=nomes_originais,
         caminhos=caminhos,
         nome_modulo=nome_modulo,
-        caminho_datasheet=caminho_ds
+        caminho_datasheet=caminho_ds,
+        limite_paginas=limite_paginas
     )
 
     processar_job_assincrono(job_id)
-
     return jsonify({'job_id': job_id, 'status': 'iniciado'})
 
 @bp.route('/status/<job_id>')
 def status_job(job_id):
-    """Retorna o status atual de um job (para polling via AJAX)."""
     job = jobs.get(job_id)
     if not job:
         return jsonify({'erro': 'Job não encontrado'}), 404
@@ -263,7 +237,6 @@ def status_job(job_id):
 
 @bp.route('/jobs')
 def listar_jobs():
-    """Lista todos os jobs (para administração)."""
     limpar_jobs_antigos()
     return jsonify({jid: {
         'status': j['status'],
@@ -274,7 +247,6 @@ def listar_jobs():
 
 @bp.route('/resultado/<job_id>')
 def ver_resultado(job_id):
-    """Página de visualização interativa do resultado."""
     job = jobs.get(job_id)
     if not job or job['status'] != 'concluido':
         return redirect(url_for('modulo8.index'))
@@ -286,7 +258,6 @@ def ver_resultado(job_id):
 
 @bp.route('/api/conexoes/<job_id>')
 def api_conexoes(job_id):
-    """Retorna as conexões em JSON para o overlay interativo."""
     job = jobs.get(job_id)
     if not job:
         return jsonify({'erro': 'Job não encontrado'}), 404
@@ -308,7 +279,6 @@ def api_conexoes(job_id):
 
 @bp.route('/api/corrigir/<job_id>', methods=['POST'])
 def api_corrigir(job_id):
-    """Recebe correções manuais do visualizador e atualiza o resultado."""
     job = jobs.get(job_id)
     if not job:
         return jsonify({'erro': 'Job não encontrado'}), 404
@@ -338,7 +308,6 @@ def api_corrigir(job_id):
 
 @bp.route('/download/<job_id>')
 def download_planilha(job_id):
-    """Gera e envia a planilha Excel do resultado."""
     job = jobs.get(job_id)
     if not job:
         return jsonify({'erro': 'Job não encontrado'}), 404
@@ -380,6 +349,14 @@ def download_planilha(job_id):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
     gerar_excel(df, tmp.name)
 
+    @current_app.after_request
+    def cleanup(response):
+        try:
+            os.remove(tmp.name)
+        except Exception as e:
+            logger.warning(f"Erro ao remover arquivo temporário: {e}")
+        return response
+
     nome_modulo = job.get('nome_modulo', 'ECU').replace(' ', '_')
     return send_file(tmp.name,
                      as_attachment=True,
@@ -387,12 +364,10 @@ def download_planilha(job_id):
 
 @bp.route('/busca')
 def busca():
-    """Página de busca inteligente (RAG)."""
     return render_template('busca.html')
 
 @bp.route('/api/buscar')
 def api_buscar():
-    """Endpoint de busca semântica (placeholder para RAG)."""
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({'resultados': [], 'total': 0})
@@ -403,16 +378,13 @@ def api_buscar():
             nome = job.get('nome_modulo', '')
             if query.lower() in nome.lower():
                 resultados.append({
-                    'job_id': job['id'],
+                    'id': job['id'],
                     'nome': nome,
                     'data': job['concluido_em'],
-                    'num_conexoes': len(job.get('resultado', {}).get('conexoes', []))
+                    'status': 'Concluído'
                 })
     return jsonify({'resultados': resultados, 'total': len(resultados)})
 
-# ------------------------------------------------------------
-# Execução standalone (para testes)
-# ------------------------------------------------------------
 if __name__ == '__main__':
     from flask import Flask
     app = Flask(__name__)
