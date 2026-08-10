@@ -2,20 +2,33 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Processando Documento</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Processando Documento - PEPERTILO</title>
     <style>
-        #loading {
-            display: none;
-            text-align: center;
-            margin-top: 50px;
+        body {
             font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .loading-container {
+            text-align: center;
+            background: #1e293b;
+            padding: 3rem 4rem;
+            border-radius: 16px;
+            border: 1px solid #475569;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
         }
         .spinner {
-            border: 8px solid #f3f3f3;
-            border-top: 8px solid #3498db;
+            border: 8px solid #334155;
+            border-top: 8px solid #3b82f6;
             border-radius: 50%;
-            width: 60px;
-            height: 60px;
+            width: 70px;
+            height: 70px;
             animation: spin 1s linear infinite;
             margin: 20px auto;
         }
@@ -23,84 +36,75 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        .status-text {
+            margin-top: 20px;
+            font-size: 1.2rem;
+            color: #94a3b8;
+        }
+        .progresso {
+            margin-top: 15px;
+            width: 100%;
+            background: #334155;
+            border-radius: 8px;
+            overflow: hidden;
+            height: 10px;
+        }
+        .progresso-bar {
+            height: 100%;
+            width: 0%;
+            background: #3b82f6;
+            transition: width 0.5s ease;
+        }
+        .erro {
+            color: #ef4444;
+            margin-top: 10px;
+            display: none;
+        }
     </style>
 </head>
 <body>
-
-    <!-- Formulário de Envio -->
-    <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
-        <input type="file" name="arquivo" required>
-        <button type="submit">Processar Documento</button>
-    </form>
-
-    <!-- Tela de Carregamento -->
-    <div id="loading">
+    <div class="loading-container">
+        <h2>⏳ Processando seu documento...</h2>
         <div class="spinner"></div>
-        <h2>Processando documento com OCR...</h2>
-        <p>Por favor, aguarde enquanto o Tesseract analisa o arquivo.</p>
+        <div class="status-text" id="etapa">Aguardando início...</div>
+        <div class="progresso">
+            <div class="progresso-bar" id="barraProgresso"></div>
+        </div>
+        <div id="erro" class="erro"></div>
+        <p style="margin-top: 20px; color: #64748b; font-size: 0.9rem;">
+            Isso pode levar alguns segundos, dependendo do tamanho do arquivo.
+        </p>
     </div>
 
     <script>
-        const form = document.getElementById('uploadForm');
-        const loadingDiv = document.getElementById('loading');
+        const jobId = '{{ job_id }}';
+        let intervalo = null;
 
-        form.addEventListener('submit', async function(e) {
-            e.preventDefault(); // Evita o comportamento padrão de recarregar a página bruto
-
-            // Oculta o formulário e mostra o carregamento
-            form.style.display = 'none';
-            loadingDiv.style.display = 'block';
-
-            const formData = new FormData(form);
-
+        async function verificarStatus() {
             try {
-                // 1. Envia o arquivo para a rota /upload
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const data = await response.json();
-                const jobId = data.job_id;
+                const res = await fetch(`/status/${jobId}`);
+                const data = await res.json();
 
-                if (jobId) {
-                    // 2. Inicia o monitoramento (Polling) do status
-                    verificarStatus(jobId);
+                if (data.status === 'concluido') {
+                    clearInterval(intervalo);
+                    window.location.href = `/resultado/${jobId}`;
+                } else if (data.status === 'erro') {
+                    clearInterval(intervalo);
+                    document.getElementById('etapa').textContent = '❌ Falha no processamento';
+                    document.getElementById('erro').textContent = 'Erro: ' + (data.erros[0]?.mensagem || 'desconhecido');
+                    document.getElementById('erro').style.display = 'block';
                 } else {
-                    alert('Erro ao iniciar o processamento.');
-                    form.style.display = 'block';
-                    loadingDiv.style.display = 'none';
+                    document.getElementById('etapa').textContent = data.etapa || 'Processando...';
+                    document.getElementById('barraProgresso').style.width = (data.progresso || 0) + '%';
                 }
-            } catch (error) {
-                console.error('Erro:', error);
-                alert('Ocorreu um erro na requisição.');
-                form.style.display = 'block';
-                loadingDiv.style.display = 'none';
+            } catch (err) {
+                console.error('Erro ao verificar status:', err);
             }
-        });
-
-        async function verificarStatus(jobId) {
-            const intervalo = setInterval(async () => {
-                try {
-                    // Cria uma rota no Flask como /status/<job_id> para checar o andamento
-                    const res = await fetch(`/status/${jobId}`);
-                    const statusData = await res.json();
-
-                    if (statusData.status === 'concluido') {
-                        clearInterval(intervalo);
-                        // Redireciona para a página de resultado final
-                        window.location.href = `/resultado/${jobId}`;
-                    } else if (statusData.status === 'erro') {
-                        clearInterval(intervalo);
-                        alert('Erro durante o processamento do OCR.');
-                        form.style.display = 'block';
-                        loadingDiv.style.display = 'none';
-                    }
-                } catch (err) {
-                    console.error('Erro na checagem de status:', err);
-                }
-            }, 2000); // Checa a cada 2 segundos
         }
+
+        // Inicia o polling a cada 2 segundos
+        intervalo = setInterval(verificarStatus, 2000);
+        verificarStatus(); // chama imediatamente
     </script>
 </body>
 </html>
