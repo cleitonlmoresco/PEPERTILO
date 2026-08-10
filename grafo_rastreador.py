@@ -18,10 +18,9 @@ CONFIG = {
     'altura_fonte_padrao': 8,
 }
 
-# CORREÇÃO: Aceita números isolados, códigos alfanuméricos e nomes funcionais comuns
 RE_COR = re.compile(r'^[A-Z]{2}(/[A-Z]{2})?$')
 RE_BITOLA = re.compile(r'^\d+\.?\d*\s*mm²$')
-RE_PINO = re.compile(r'^([A-Z]\d{1,2}|\d+|[A-Z]{2,5}|[A-Z]{2,5}_?[HL]?)$')  # Aceita "1", "A1", "VDD", "GND", "BKGD", "CAN_H"
+RE_PINO = re.compile(r'^([A-Z]\d{1,2}|\d+|[A-Z]{2,5}|[A-Z]{2,5}_?[HL]?)$')  # CORRIGIDO
 RE_CONTINUACAO = re.compile(r'(?:Pág\.?\s*|Folha\s*|página\s*|continua\s+(?:na|para)?\s*(?:pág\.?|folha)?\s*)(\d+)', re.IGNORECASE)
 
 def ponto_em_retangulo(x, y, rect):
@@ -63,10 +62,7 @@ def encontrar_no_mais_proximo(G, pos, max_dist):
     return melhor
 
 def identificar_ecu(retangulos, canvas):
-    """
-    CORREÇÃO: Escolhe o maior retângulo que NÃO cobre a página inteira.
-    Em manuais, o chip geralmente é um retângulo com imagem.
-    """
+    """Escolhe o maior retângulo que NÃO cobre a página inteira."""
     if not retangulos:
         return None, []
     
@@ -74,20 +70,15 @@ def identificar_ecu(retangulos, canvas):
     if area_canvas <= 0:
         return retangulos[0], retangulos[1:]
     
-    # Ordenar por área decrescente
     ordenados = sorted(retangulos, key=lambda r: r['area'], reverse=True)
-    
-    # Escolher o primeiro que não cobre mais de 60% da página
     for rect in ordenados:
         if rect['area'] < 0.6 * area_canvas:
             return rect, [r for r in retangulos if r != rect]
-    
-    # Fallback: o maior
     return ordenados[0], ordenados[1:]
 
 def extrair_pinos_ecu(textos, ecu, altura_fonte):
     pinos = {}
-    dist_limite = max(altura_fonte * 3, 30)  # CORREÇÃO: distância maior para capturar textos próximos
+    dist_limite = max(altura_fonte * 3, 30)
     for t in textos:
         if RE_PINO.match(t['texto']) and ponto_perto_retangulo(t['x'], t['y'], ecu, dist_limite):
             pinos[t['texto']] = (t['x'], t['y'])
