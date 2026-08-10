@@ -1,4 +1,3 @@
-
 """
 Módulo 2 - Extração Vetorial de PDFs de Engenharia.
 Extrai linhas (fios), textos, retângulos (componentes) e círculos (emendas)
@@ -11,6 +10,7 @@ import fitz
 import numpy as np
 from logger_erros import (logger, monitorar, ErroExtracao, ErroPipeline,
                           Severidade, tratar_erro_controlado, ColetorErros)
+from utils import to_native
 
 CONFIG = {
     'margem_lateral': 0.05,
@@ -41,7 +41,6 @@ def cor_valida(cor_rgb):
 
 @monitorar(modulo='M2')
 def extrair_primitivas_vetorial(caminho_pdf):
-    """Extrai primitivas de todas as páginas de um PDF vetorial."""
     if not caminho_pdf or not isinstance(caminho_pdf, str):
         raise ErroExtracao("Caminho do PDF inválido ou não informado", severidade=Severidade.CRITICA)
 
@@ -71,9 +70,13 @@ def extrair_primitivas_vetorial(caminho_pdf):
                         coletor.adicionar_aviso(f"Página {i+1}: fallback de emendas falhou")
 
                 dados[i + 1] = {
-                    'linhas': linhas, 'textos': textos,
-                    'retangulos': retangulos, 'curvas': curvas,
-                    'canvas': canvas, 'width': page.width, 'height': page.height
+                    'linhas': to_native(linhas),
+                    'textos': to_native(textos),
+                    'retangulos': to_native(retangulos),
+                    'curvas': to_native(curvas),
+                    'canvas': to_native(canvas),
+                    'width': page.width,
+                    'height': page.height
                 }
 
                 if len(linhas) < 5:
@@ -100,12 +103,10 @@ def extrair_primitivas_vetorial(caminho_pdf):
     logger.info(f"Extração concluída: {len(dados)} páginas processadas", extra={'modulo': 'M2'})
     return dados
 
-
 def definir_canvas(page):
     w, h = page.width, page.height
     return (w * CONFIG['margem_lateral'], h * CONFIG['margem_superior'],
             w * (1 - CONFIG['margem_lateral']), h * (1 - CONFIG['margem_inferior']))
-
 
 def extrair_linhas(page, canvas, coletor=None):
     linhas_validas = []
@@ -129,7 +130,6 @@ def extrair_linhas(page, canvas, coletor=None):
                 coletor.adicionar_aviso(f"Linha ignorada: {str(e)}")
     return linhas_validas
 
-
 def extrair_textos(page, canvas):
     textos = []
     palavras, erro = tratar_erro_controlado(page.extract_words, keep_blank_chars=False,
@@ -147,7 +147,6 @@ def extrair_textos(page, canvas):
             continue
         textos.append({'x': xc, 'y': yc, 'texto': texto, 'tam': altura})
     return textos
-
 
 def extrair_retangulos(page, canvas, coletor=None):
     retangulos = []
@@ -171,7 +170,6 @@ def extrair_retangulos(page, canvas, coletor=None):
                 coletor.adicionar_aviso(f"Retângulo ignorado: {str(e)}")
     return retangulos
 
-
 def extrair_curvas_emendas(page, canvas):
     emendas = []
     if hasattr(page, 'curves') and page.curves:
@@ -187,7 +185,6 @@ def extrair_curvas_emendas(page, canvas):
             except Exception:
                 continue
     return emendas
-
 
 def extrair_emendas_via_fitz(caminho_pdf, num_pagina, canvas):
     emendas = []
@@ -219,7 +216,6 @@ def extrair_emendas_via_fitz(caminho_pdf, num_pagina, canvas):
     finally:
         doc.close()
     return emendas
-
 
 if __name__ == '__main__':
     import sys
