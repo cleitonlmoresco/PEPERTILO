@@ -190,6 +190,14 @@ def index():
                            jobs=list(jobs.values())[-20:],
                            tipos=TIPOS_VALIDOS)
 
+@bp.route('/carregamento/<job_id>')
+def carregamento(job_id):
+    """Página de carregamento com polling automático."""
+    job = jobs.get(job_id)
+    if not job:
+        return redirect(url_for('modulo8.index'))
+    return render_template('carregamento.html', job_id=job_id, job=job)
+
 @bp.route('/upload', methods=['POST'])
 def upload():
     """Endpoint de upload de arquivos."""
