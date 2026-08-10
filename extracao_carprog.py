@@ -9,7 +9,7 @@ from logger_erros import logger
 
 # Padrões para extração
 PADRAO_FIOS = re.compile(
-    r'(BLUE|BROWN|GREY|RED|VIOLET|WHITE|GREEN|ORANGE|YELLOW|BLACK|PURPLE|PINK|BROWN|GREY)\s*[-–]\s*([^\n]+)',
+    r'(BLUE|BROWN|GREY|RED|VIOLET|WHITE|GREEN|ORANGE|YELLOW|BLACK|PURPLE|PINK)\s*[-–]\s*([^\n;]+)',
     re.IGNORECASE
 )
 
@@ -24,9 +24,18 @@ PADRAO_MASK = re.compile(
 )
 
 PADRAO_PINO_FUNCAO = re.compile(
-    r'(P[A-Z][0-9]|[A-Z][0-9]{1,2}|[0-9]{1,2})\s+[-–]\s+([A-Za-z0-9\s]+)',
+    r'([A-Z0-9]{2,5})\s+[-–]\s+([A-Za-z0-9\s]+)',
     re.IGNORECASE
 )
+
+# Mapeamento manual para termos que frequentemente são extraídos incorretamente
+MAPA_CORRECAO = {
+    'BKGD': 'BKGD (Background Debug)',
+    'RESET': 'Reset signal',
+    'GND': 'Ground',
+    'VDD': 'Positive supply',
+    'VSS': 'Ground supply',
+}
 
 def extrair_carprog(caminho_pdf, limite_paginas=0):
     """
@@ -55,7 +64,7 @@ def extrair_carprog(caminho_pdf, limite_paginas=0):
     doc.close()
 
     if not texto_completo.strip():
-        logger.warning("[M11] Nenhum texto extraído do PDF.", extra={'modulo': 'M11'})
+        logger.warning("[M11] Nenhum texto extraído do PDF. O PDF é uma imagem (não tem texto selecionável).", extra={'modulo': 'M11'})
         return {}
 
     resultado = {}
@@ -64,7 +73,6 @@ def extrair_carprog(caminho_pdf, limite_paginas=0):
     for match in PADRAO_FIOS.finditer(texto_completo):
         cor = match.group(1).strip().upper()
         descricao = match.group(2).strip()
-        # Limpa descrição (remove pontuação extra)
         descricao = re.sub(r'[;,]', '', descricao)
         if cor and descricao:
             resultado[cor] = descricao
@@ -81,41 +89,46 @@ def extrair_carprog(caminho_pdf, limite_paginas=0):
     # 3. Extrair máscaras (se não estiverem associadas a MCU)
     for match in PADRAO_MASK.finditer(texto_completo):
         mask = match.group(1).strip()
-        # Se a máscara já não foi capturada, adiciona
-        if mask not in str(resultado.values()):
-            # Tenta encontrar o contexto (linha anterior)
+        if mask and mask not in str(resultado.values()):
+            # Tenta encontrar contexto: linha anterior
             linhas = texto_completo.split('\n')
             for idx, linha in enumerate(linhas):
                 if mask in linha:
-                    # Pega o texto antes da máscara (pode ser o nome do processador)
                     partes = linha.split(mask)
                     antes = partes[0].strip()
-                    if antes and len(antes) < 30:
-                        resultado[antes.strip()] = f"Mask {mask}"
+                    if antes and len(antes) < 30 and any(c.isalpha() for c in antes):
+                        resultado[antes] = f"Mask {mask}"
                         break
                     else:
                         resultado[mask] = "Máscara MPU"
                         break
 
     # 4. Se ainda não extraiu nada, tenta padrão genérico de pino-função
-    if len(resultado) < 5:
+    if len(resultado) < 3:
         for match in PADRAO_PINO_FUNCAO.finditer(texto_completo):
             pino = match.group(1).strip().upper()
             funcao = match.group(2).strip()
-            if pino and funcao:
+            if pino and funcao and len(pino) >= 2 and len(funcao) >= 2:
                 resultado[pino] = funcao
 
-    logger.info(f"[M11] Extração concluída: {len(resultado)} pares", extra={'modulo': 'M11'})
+    # 5. Aplica correções manuais para termos conhecidos
+    for k, v in resultado.items():
+        if k in MAPA_CORRECAO:
+            resultado[k] = MAPA_CORRECAO[k]
 
     # Filtra itens indesejados (palavras muito curtas ou óbvias)
     itens_filtrados = {}
     for k, v in resultado.items():
-        if len(k) < 2 or k in ['TO', 'FOR', 'E', 'IF', 'DID', 'ALL']:
+        if len(k) < 2 or k in ['TO', 'FOR', 'E', 'IF', 'DID', 'ALL', 'OR', 'AND', 'THE']:
             continue
-        if len(v) < 2 or v in ['or', 'to', 'all', 'did']:
+        if len(v) < 2 or v.lower() in ['or', 'to', 'all', 'did', 'can']:
+            continue
+        # Remove chaves que são apenas números de página
+        if k.isdigit() and len(k) == 1:
             continue
         itens_filtrados[k] = v
 
+    logger.info(f"[M11] Extração concluída: {len(itens_filtrados)} pares", extra={'modulo': 'M11'})
     return itens_filtrados
 
 if __name__ == '__main__':
