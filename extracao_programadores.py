@@ -1,7 +1,6 @@
-
 """
 Módulo 10 - Extração de Manuais de Programadores (CarProg, etc.)
-Usa OCR e análise de layout para extrair tabelas de pinagem.
+Usa OCR, detecção de colunas por clustering e agrupamento de linhas.
 """
 
 import re
@@ -9,117 +8,156 @@ import cv2
 import numpy as np
 import pytesseract
 from collections import defaultdict
+from sklearn.cluster import KMeans
 from logger_erros import logger
 
 # Palavras-chave para identificar cabeçalhos de tabela de pinos
-KEYWORDS_PINO = ['pin', 'pino', 'terminal', 'no.', 'nº']
-KEYWORDS_FUNCAO = ['função', 'funcao', 'function', 'descrição', 'description', 'signal', 'sinal', 'name', 'função']
-KEYWORDS_COR = ['color', 'cor', 'wire', 'fio']
+KEYWORDS_PINO = ['pin', 'pino', 'terminal', 'no.', 'nº', 'pino']
+KEYWORDS_FUNCAO = ['função', 'funcao', 'function', 'descrição', 'description', 'signal', 'sinal', 'name']
 
-def extrair_tabela_com_layout(imagem_gray):
+def preprocessar_imagem(imagem_gray):
+    """Pré-processamento para melhorar OCR: equalização, contraste, binarização."""
+    # Equalização de histograma adaptativa (CLAHE)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    img = clahe.apply(imagem_gray)
+    # Aumentar contraste
+    img = cv2.convertScaleAbs(img, alpha=1.5, beta=0)
+    # Binarização com Otsu
+    _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return img
+
+def detectar_colunas_por_clustering(objetos):
     """
-    Extrai tabela usando análise de layout: detecta linhas horizontais/verticais,
-    agrupa células e extrai texto de cada célula com Tesseract.
+    Usa K-means para agrupar objetos por coordenada X (colunas).
+    Retorna os centroides dos clusters.
+    """
+    if len(objetos) < 2:
+        return []
+    X = np.array([[obj['x']] for obj in objetos])
+    # Estima número de colunas como no mínimo 2 e no máximo 5
+    n_colunas = min(5, max(2, len(X) // 3))
+    kmeans = KMeans(n_clusters=n_colunas, random_state=0, n_init=10)
+    kmeans.fit(X)
+    centroides = sorted(kmeans.cluster_centers_.flatten())
+    return centroides
+
+def extrair_tabela_com_layout_melhorado(imagem_gray):
+    """
+    Extrai tabela usando análise de layout: detecta células via contornos,
+    agrupa por linhas e colunas usando clustering, extrai texto de cada célula.
     """
     if imagem_gray is None:
         return {}
 
-    # 1. Binarização
-    _, bin = cv2.threshold(imagem_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # Inverter para ter fundo preto e texto branco (melhor para contornos)
-    bin_inv = cv2.bitwise_not(bin)
+    # Pré-processamento
+    img = preprocessar_imagem(imagem_gray)
+    # Inverter para fundo preto, texto branco (melhor para contornos)
+    img_inv = cv2.bitwise_not(img)
 
-    # 2. Detecção de linhas de grade (horizontal e vertical)
-    kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
-    kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50))
-    linhas_h = cv2.morphologyEx(bin_inv, cv2.MORPH_OPEN, kernel_h, iterations=2)
-    linhas_v = cv2.morphologyEx(bin_inv, cv2.MORPH_OPEN, kernel_v, iterations=2)
+    # Detectar linhas de grade (horizontal e vertical) usando morfologia
+    kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 1))
+    kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 30))
+    linhas_h = cv2.morphologyEx(img_inv, cv2.MORPH_OPEN, kernel_h, iterations=2)
+    linhas_v = cv2.morphologyEx(img_inv, cv2.MORPH_OPEN, kernel_v, iterations=2)
     grade = cv2.bitwise_or(linhas_h, linhas_v)
 
-    # 3. Encontrar contornos das células (regiões fechadas)
+    # Encontrar contornos das células (regiões fechadas)
     contornos, _ = cv2.findContours(grade, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     retangulos = []
     for cnt in contornos:
         x, y, w, h = cv2.boundingRect(cnt)
         # Filtra células muito pequenas ou muito grandes
-        if w > 20 and h > 15 and w < 1000 and h < 200:
+        if w > 15 and h > 10 and w < 800 and h < 150:
             retangulos.append((x, y, w, h))
 
-    if not retangulos:
-        # Fallback: agrupar textos por posição (como no M9)
+    if len(retangulos) < 4:
+        # Fallback: agrupar textos por posição (sem grade)
         return extrair_tabela_por_ocr_simples(imagem_gray)
 
-    # 4. Ordenar retângulos por linha (Y) e coluna (X)
-    # Agrupar por Y (tolerância de 10px)
+    # Extrair texto de cada célula com Tesseract (OCR localizado)
+    celulas_texto = {}
+    for (x, y, w, h) in retangulos:
+        # Recortar a célula
+        celula = img[y:y+h, x:x+w]
+        # OCR localizado
+        config = r'--oem 3 --psm 8 -l por+eng'
+        texto = pytesseract.image_to_string(celula, config=config).strip()
+        if texto:
+            celulas_texto[(x, y)] = texto
+
+    # Agrupar células por linha (Y) e coluna (X)
+    # Detectar linhas (agrupar por Y com tolerância 10px)
     linhas_celulas = defaultdict(list)
-    for x, y, w, h in retangulos:
-        # Encontrar linha (agrupar por Y)
+    for (x, y), texto in celulas_texto.items():
         adicionado = False
         for y_linha in list(linhas_celulas.keys()):
             if abs(y - y_linha) < 10:
-                linhas_celulas[y_linha].append((x, y, w, h))
+                linhas_celulas[y_linha].append({'x': x, 'y': y, 'texto': texto})
                 adicionado = True
                 break
         if not adicionado:
-            linhas_celulas[y].append((x, y, w, h))
+            linhas_celulas[y].append({'x': x, 'y': y, 'texto': texto})
 
     # Ordenar cada linha por X
     for y in linhas_celulas:
-        linhas_celulas[y].sort(key=lambda item: item[0])
+        linhas_celulas[y].sort(key=lambda item: item['x'])
 
-    # 5. Para cada célula, extrair texto com Tesseract (OCR localizado)
-    celulas_texto = {}
-    for y_linha, celulas in linhas_celulas.items():
-        for x, y, w, h in celulas:
-            # Recortar a célula
-            celula = bin[y:y+h, x:x+w]
-            # Aplicar OCR na célula
-            config = r'--oem 3 --psm 8 -l por+eng'
-            texto = pytesseract.image_to_string(celula, config=config).strip()
-            if texto:
-                celulas_texto[(x, y)] = texto
-
-    # 6. Identificar cabeçalho e colunas
-    # Pegar a primeira linha com células (que deve ser o cabeçalho)
-    y_linhas_ordenadas = sorted(linhas_celulas.keys())
-    if not y_linhas_ordenadas:
+    # Detectar colunas usando clustering em todas as células de todas as linhas
+    todas_celulas = [item for linha in linhas_celulas.values() for item in linha]
+    if len(todas_celulas) < 2:
         return {}
 
-    cabecalho = linhas_celulas[y_linhas_ordenadas[0]]
-    cabecalho_textos = []
-    for x, y, w, h in cabecalho:
-        texto = celulas_texto.get((x, y), '')
-        cabecalho_textos.append(texto.lower())
+    centroides_colunas = detectar_colunas_por_clustering(todas_celulas)
+    if len(centroides_colunas) < 2:
+        return {}
 
-    # Descobrir índices das colunas de pino e função
+    # Atribuir cada célula a uma coluna baseada no centroide mais próximo
+    for y_linha, celulas in linhas_celulas.items():
+        for celula in celulas:
+            distancias = [abs(celula['x'] - col) for col in centroides_colunas]
+            col_idx = np.argmin(distancias)
+            celula['coluna'] = col_idx
+
+    # Identificar cabeçalho: pegar a primeira linha que contenha palavras-chave
+    cabecalho_encontrado = False
     idx_pino = None
     idx_funcao = None
-    for i, txt in enumerate(cabecalho_textos):
-        if any(k in txt for k in KEYWORDS_PINO):
-            idx_pino = i
-        if any(k in txt for k in KEYWORDS_FUNCAO):
-            idx_funcao = i
 
-    # Se não encontrou, assume que a primeira coluna é pino e a segunda função
-    if idx_pino is None and len(cabecalho) >= 2:
-        idx_pino = 0
-        idx_funcao = 1
-
-    if idx_pino is None or idx_funcao is None:
-        # Fallback: sem cabeçalho, tenta extrair pares por palavras-chave
-        return extrair_pares_por_palavras_chave(imagem_gray)
-
-    # 7. Extrair dados das linhas seguintes
-    pin_func = {}
-    for y_linha in y_linhas_ordenadas[1:]:  # pula cabeçalho
+    linhas_ordenadas = sorted(linhas_celulas.keys())
+    for y_linha in linhas_ordenadas:
         celulas = linhas_celulas[y_linha]
-        if len(celulas) <= max(idx_pino, idx_funcao):
-            continue
-        # Pega os textos das células correspondentes
-        pino_celula = celulas[idx_pino]
-        func_celula = celulas[idx_funcao]
-        pino_texto = celulas_texto.get((pino_celula[0], pino_celula[1]), '')
-        func_texto = celulas_texto.get((func_celula[0], func_celula[1]), '')
+        textos = [c['texto'].lower() for c in celulas]
+        # Verificar se tem palavras de pino e função
+        tem_pino = any(any(k in t for k in KEYWORDS_PINO) for t in textos)
+        tem_funcao = any(any(k in t for k in KEYWORDS_FUNCAO) for t in textos)
+        if tem_pino and tem_funcao:
+            cabecalho_encontrado = True
+            # Mapear colunas
+            for i, texto in enumerate(textos):
+                if any(k in texto.lower() for k in KEYWORDS_PINO):
+                    idx_pino = i
+                if any(k in texto.lower() for k in KEYWORDS_FUNCAO):
+                    idx_funcao = i
+            break
+
+    if not cabecalho_encontrado:
+        # Fallback: usar as duas primeiras colunas como pino e função
+        idx_pino = 0
+        idx_funcao = 1 if len(centroides_colunas) > 1 else 0
+
+    # Extrair dados das linhas seguintes
+    pin_func = {}
+    for y_linha in linhas_ordenadas[1:]:  # pula cabeçalho
+        celulas = linhas_celulas[y_linha]
+        # Organizar por coluna
+        celulas_por_coluna = {}
+        for cel in celulas:
+            col = cel.get('coluna')
+            if col is not None:
+                celulas_por_coluna[col] = cel['texto']
+        # Pega os textos das colunas identificadas
+        pino_texto = celulas_por_coluna.get(idx_pino, '')
+        func_texto = celulas_por_coluna.get(idx_funcao, '')
         pino_limpo = re.sub(r'[^A-Z0-9]', '', pino_texto.upper())
         if pino_limpo and func_texto:
             pin_func[pino_limpo] = func_texto
@@ -127,8 +165,8 @@ def extrair_tabela_com_layout(imagem_gray):
     return pin_func
 
 def extrair_tabela_por_ocr_simples(imagem_gray):
-    """Fallback: agrupa textos por linha e coluna (versão melhorada do M9)"""
-    _, img = cv2.threshold(imagem_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    """Fallback: agrupa textos por linha e coluna (versão melhorada)"""
+    img = preprocessar_imagem(imagem_gray)
     custom_config = r'--oem 3 --psm 6 -l por+eng'
     data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, config=custom_config)
 
@@ -159,23 +197,27 @@ def extrair_tabela_por_ocr_simples(imagem_gray):
         grupo_atual.sort(key=lambda item: item['x'])
         grupos.append(grupo_atual)
 
-    # Identificar cabeçalho e colunas
-    cabecalho = None
+    # Detectar colunas via clustering em todas as palavras
+    todas_palavras = [item for grupo in grupos for item in grupo]
+    if len(todas_palavras) < 4:
+        return {}
+
+    centroides = detectar_colunas_por_clustering(todas_palavras)
+    if len(centroides) < 2:
+        return {}
+
+    # Atribuir cada palavra a uma coluna
     for grupo in grupos:
-        textos = [item['texto'].lower() for item in grupo]
-        if any(any(k in t for k in KEYWORDS_PINO) for t in textos) and \
-           any(any(k in t for k in KEYWORDS_FUNCAO) for t in textos):
-            cabecalho = grupo
-            break
-    if not cabecalho and len(grupos) > 0:
-        cabecalho = grupos[0]  # assume primeira linha
+        for palavra in grupo:
+            distancias = [abs(palavra['x'] - col) for col in centroides]
+            palavra['coluna'] = np.argmin(distancias)
 
-    if not cabecalho or len(cabecalho) < 2:
-        # Fallback final: extrair pares por palavras-chave
-        return extrair_pares_por_palavras_chave(imagem_gray)
-
+    # Identificar cabeçalho (primeira linha)
+    if not grupos:
+        return {}
+    cabecalho = grupos[0]
     idx_pino = 0
-    idx_funcao = 1
+    idx_funcao = 1 if len(centroides) > 1 else 0
     for i, item in enumerate(cabecalho):
         t = item['texto'].lower()
         if any(k in t for k in KEYWORDS_PINO):
@@ -185,23 +227,28 @@ def extrair_tabela_por_ocr_simples(imagem_gray):
 
     pin_func = {}
     for grupo in grupos[1:]:
-        if len(grupo) <= max(idx_pino, idx_funcao):
-            continue
-        pino = re.sub(r'[^A-Z0-9]', '', grupo[idx_pino]['texto'].upper())
-        func = grupo[idx_funcao]['texto'].strip()
-        if pino and func:
-            pin_func[pino] = func
+        # Organizar por coluna
+        celulas_por_coluna = {}
+        for item in grupo:
+            col = item.get('coluna')
+            if col is not None:
+                celulas_por_coluna[col] = item['texto']
+        pino_texto = celulas_por_coluna.get(idx_pino, '')
+        func_texto = celulas_por_coluna.get(idx_funcao, '')
+        pino_limpo = re.sub(r'[^A-Z0-9]', '', pino_texto.upper())
+        if pino_limpo and func_texto:
+            pin_func[pino_limpo] = func_texto
 
     return pin_func
 
 def extrair_pares_por_palavras_chave(imagem_gray):
-    """Extrai pares chave-valor baseados em padrões como 'BLUE - Reset' ou 'BKGD: 3.3V'"""
-    _, img = cv2.threshold(imagem_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    """Fallback final: extrai pares baseados em padrões como 'BLUE - Reset'"""
+    img = preprocessar_imagem(imagem_gray)
     custom_config = r'--oem 3 --psm 6 -l por+eng'
     texto = pytesseract.image_to_string(img, config=custom_config)
 
     pin_func = {}
-    # Padrões: "BLUE - Reset", "RED - +5V", "BKGD: 3.3V", "GND - Terra", etc.
+    # Padrões: "BLUE - Reset", "RED - +5V", "BKGD: 3.3V"
     padrao = re.compile(r'([A-Za-z0-9_]+)\s*[-:]\s*([^\-:\n]+)')
     matches = padrao.findall(texto)
     for chave, valor in matches:
@@ -209,25 +256,6 @@ def extrair_pares_por_palavras_chave(imagem_gray):
         valor_limpo = valor.strip()
         if chave_limpa and valor_limpo:
             pin_func[chave_limpa] = valor_limpo
-
-    # Se não encontrou, tenta capturar linhas que contenham palavras-chave
-    if not pin_func:
-        linhas = texto.split('\n')
-        for linha in linhas:
-            linha = linha.strip()
-            if not linha:
-                continue
-            # Procura por palavras como VDD, GND, RESET, etc.
-            for sigla in ['VDD', 'GND', 'RESET', 'BKGD', 'VPP', 'VCC', 'CAN', 'LIN', 'K-LINE']:
-                if sigla in linha:
-                    partes = linha.split()
-                    for i, part in enumerate(partes):
-                        if sigla in part:
-                            pino = part
-                            func = ' '.join(partes[i+1:]) if i+1 < len(partes) else ''
-                            if pino and func:
-                                pin_func[pino] = func
-                            break
 
     return pin_func
 
@@ -254,13 +282,16 @@ def extrair_programador_com_tesseract(caminho_pdf, limite_paginas=0):
         img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
-        # Tenta extrair com layout primeiro
-        parcial = extrair_tabela_com_layout(gray)
+        # Tenta extrair com layout melhorado primeiro
+        parcial = extrair_tabela_com_layout_melhorado(gray)
         if not parcial:
             # Fallback para OCR simples
             parcial = extrair_tabela_por_ocr_simples(gray)
-        resultado.update(parcial)
+        if not parcial:
+            # Fallback para palavras-chave
+            parcial = extrair_pares_por_palavras_chave(gray)
 
+        resultado.update(parcial)
         logger.debug(f"Página {i+1}: {len(parcial)} funções extraídas (M10)", extra={'modulo': 'M10'})
 
     doc.close()
