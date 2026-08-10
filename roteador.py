@@ -1,7 +1,6 @@
 """
 Roteador - Módulo Central de Encaminhamento.
 Classifica o arquivo e encaminha para os módulos de processamento adequados.
-Suporte a streaming de páginas para reduzir consumo de RAM.
 """
 
 import os
@@ -14,7 +13,6 @@ from classificador import classificar_arquivo, TIPOS_VALIDOS
 from logger_erros import logger, monitorar, ErroPipeline, Severidade, ColetorErros
 from utils import to_native
 
-# Módulos do pipeline
 from extracao_vetorial import extrair_primitivas_vetorial
 from grafo_rastreador import processar_diagrama_multipagina, processar_diagrama
 from restauracao_img import restaurar_imagem
@@ -28,15 +26,9 @@ if DEBUG_MODE:
     DEBUG_DIR.mkdir(exist_ok=True)
 
 # ============================================================
-# PROCESSAR PDF RASTERIZADO COM STREAMING E FALLBACK
+# PROCESSAR PDF RASTERIZADO COM STREAMING E ESTRUTURA POR PÁGINA
 # ============================================================
 def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
-    """
-    Processa PDF rasterizado com streaming: cada página é processada e seus dados
-    são acumulados em estruturas leves (não armazena imagens).
-    Se detectar que o PDF é um manual/datasheet (poucos elementos gráficos),
-    aciona o M6 automaticamente.
-    """
     logger.info(">>> INICIANDO PROCESSAMENTO STREAMING DO PDF...", extra={'modulo': 'Roteador'})
     coletor = ColetorErros()
 
@@ -51,23 +43,19 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
         doc.close()
         return {'status': 'erro', 'mensagem': 'PDF não contém páginas.'}
 
-    # Estruturas leves para acumular dados
-    todas_linhas = []
-    todos_textos = []
-    todos_retangulos = []
-    todas_emendas = []
+    # Estrutura por página (primitivas, sem imagens)
+    dados_por_pagina = {}
     pinos_mpu = []
-    dados_por_pagina = {}   # apenas metadados, não imagens
+    paginas_processadas = 0
 
     for i, page in enumerate(doc):
         if limite_paginas > 0 and i >= limite_paginas:
-            logger.info(f"Limite de {limite_paginas} páginas atingido. Parando.", extra={'modulo': 'Roteador'})
+            logger.info(f"Limite de {limite_paginas} páginas atingido.", extra={'modulo': 'Roteador'})
             break
 
         try:
             logger.info(f">>> Extraindo página {i+1}/{total_paginas}", extra={'modulo': 'Roteador'})
 
-            # Converter página para imagem
             pix = page.get_pixmap(dpi=300)
             img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
@@ -75,36 +63,29 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             if DEBUG_MODE:
                 cv2.imwrite(str(DEBUG_DIR / f"pagina_{i+1}_original.png"), img)
 
-            # Restauração e detecção de símbolos
             esqueleto, binaria = restaurar_imagem(img)
             dados_pagina = processar_imagem_restaurada(esqueleto, binaria, original=img)
 
-            # Extrair primitivas e acumular em listas planas
-            linhas = dados_pagina.get('linhas', [])
-            textos = dados_pagina.get('textos', [])
-            retangulos = dados_pagina.get('retangulos', [])
-            emendas = dados_pagina.get('curvas', [])
-
-            todas_linhas.extend(linhas)
-            todos_textos.extend(textos)
-            todos_retangulos.extend(retangulos)
-            todas_emendas.extend(emendas)
-
-            # Guardar metadados por página (para futura referência)
+            # Guarda apenas as primitivas (não a imagem)
             dados_por_pagina[i+1] = {
-                'num_linhas': len(linhas),
-                'num_textos': len(textos),
-                'num_retangulos': len(retangulos),
-                'num_emendas': len(emendas)
+                'linhas': dados_pagina.get('linhas', []),
+                'textos': dados_pagina.get('textos', []),
+                'retangulos': dados_pagina.get('retangulos', []),
+                'curvas': dados_pagina.get('curvas', []),
+                'canvas': dados_pagina.get('canvas', (0, 0, 1000, 1000)),
+                'width': dados_pagina.get('width', 1000),
+                'height': dados_pagina.get('height', 1000)
             }
 
-            # Verificar Modo MPU
+            paginas_processadas += 1
+
+            # Verificar MPU
             resultado_mpu = processar_modo_mpu(dados_pagina, ferramenta='CarProg_A10')
             if resultado_mpu.get('modo') == 'mpu':
-                logger.info(">>> MODO MPU ATIVADO – LEITURA DE MICROCONTROLADOR <<<", extra={'modulo': 'MPU'})
+                logger.info(">>> MODO MPU ATIVADO <<<", extra={'modulo': 'MPU'})
                 pinos_mpu.extend(resultado_mpu.get('pinos', []))
 
-            # Liberar memória local
+            # Liberar memória
             del img, esqueleto, binaria, dados_pagina
 
         except Exception as e:
@@ -116,7 +97,10 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
 
     doc.close()
 
-    # Se alguma página ativou o MPU, retornar resultado especial
+    if paginas_processadas == 0:
+        return {'status': 'erro', 'mensagem': 'Nenhuma página processada com sucesso'}
+
+    # Se MPU foi detectado, retornar pinos
     if pinos_mpu:
         return {
             'status': 'ok',
@@ -124,17 +108,17 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             'modo': 'mpu',
             'pinos': to_native(pinos_mpu),
             'num_pinos': len(pinos_mpu),
-            'num_paginas': len(dados_por_pagina),
+            'num_paginas': paginas_processadas,
             'ferramenta': 'CarProg_A10'
         }
 
-    # Verificar se há elementos gráficos suficientes para construir grafo
-    total_retangulos = len(todos_retangulos)
-    total_linhas = len(todas_linhas)
+    # Verificar se é um manual (poucos retângulos) ou diagrama
+    total_retangulos = sum(len(d['retangulos']) for d in dados_por_pagina.values())
+    total_linhas = sum(len(d['linhas']) for d in dados_por_pagina.values())
 
-    if total_retangulos < 2 and total_linhas < 10:
+    # CORREÇÃO: Se for manual (poucos retângulos, muitas linhas ou muito texto), extrair datasheet
+    if total_retangulos < 3 or total_linhas < 20:
         logger.warning("Poucos elementos gráficos - ativando modo DATASHEET/MANUAL", extra={'modulo': 'Roteador'})
-        # Tentar extrair datasheet do próprio PDF
         try:
             pin_func = extrair_datasheet(caminho_pdf)
             if pin_func:
@@ -144,58 +128,33 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
                     'modulo': 'M6',
                     'funcoes': to_native(pin_func),
                     'num_pinos': len(pin_func),
-                    'num_paginas': len(dados_por_pagina),
+                    'num_paginas': paginas_processadas,
                     'mensagem': 'Arquivo processado como datasheet (modo leve)'
-                }
-            else:
-                return {
-                    'status': 'erro',
-                    'mensagem': 'Não foi possível extrair informações do arquivo. Verifique se é um diagrama ou datasheet válido.',
-                    'num_paginas': len(dados_por_pagina)
                 }
         except Exception as e:
             logger.error(f"Falha na extração automática de datasheet: {e}", extra={'modulo': 'Roteador'})
-            return {
-                'status': 'erro',
-                'mensagem': f'Falha ao extrair datasheet: {str(e)}',
-                'num_paginas': len(dados_por_pagina)
-            }
 
-    # Se chegou aqui, temos elementos gráficos suficientes -> construir grafo
-    # Precisamos reconstruir a estrutura de dados por página para o grafo_rastreador
-    # Mas não temos mais as imagens, apenas as primitivas acumuladas.
-    # Para simplificar, vamos criar um dicionário com uma única página artificial contendo todas as primitivas.
-    # NOTA: Isso perde a informação de página, mas é um trade-off para evitar memória.
-    dados_consolidados = {
-        1: {
-            'linhas': todas_linhas,
-            'textos': todos_textos,
-            'retangulos': todos_retangulos,
-            'curvas': todas_emendas,
-            'canvas': (0, 0, 1000, 1000)  # dummy
-        }
-    }
-
+    # Construir grafo usando as páginas separadas
     try:
-        conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_consolidados)
+        conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_por_pagina)
         return {
             'status': 'ok',
             'modulo': 'M5',
             'conexoes': to_native(conexoes),
             'num_conexoes': len(conexoes),
             'num_pinos': len(pinos),
-            'num_paginas': len(dados_por_pagina)
+            'num_paginas': paginas_processadas
         }
     except Exception as e:
         logger.error(f"Erro ao construir grafo: {e}", extra={'modulo': 'Roteador'})
         return {
             'status': 'erro',
             'mensagem': f'Falha ao construir grafo: {str(e)}',
-            'num_paginas': len(dados_por_pagina)
+            'num_paginas': paginas_processadas
         }
 
 # ============================================================
-# DEMAIS FUNÇÕES (sem mudanças significativas)
+# DEMAIS FUNÇÕES
 # ============================================================
 
 def processar_pdf_vetorial(caminho):
@@ -244,11 +203,9 @@ def processar_imagem_limpa(caminho_imagem):
         return {'status': 'erro', 'mensagem': str(e)}
 
 def processar_foto_celular(caminho_imagem):
-    logger.info(f"Processando foto de celular: {caminho_imagem}", extra={'modulo': 'Roteador'})
     return processar_imagem_limpa(caminho_imagem)
 
 def processar_manual(caminho_pdf):
-    """Processamento específico para manuais/datasheets."""
     logger.info(f"Processando manual: {caminho_pdf}", extra={'modulo': 'Roteador'})
     try:
         pin_func = extrair_datasheet(caminho_pdf)
@@ -279,21 +236,10 @@ ROTAS = {
     'desconhecido': processar_desconhecido,
 }
 
-# ============================================================
-# FUNÇÃO PRINCIPAL DO ROTEADOR
-# ============================================================
 @monitorar(modulo='Roteador')
 def rotear_arquivo(caminho_arquivo, limite_paginas=0):
-    """
-    Classifica o arquivo e o encaminha para o módulo apropriado.
-    Parâmetro limite_paginas: quantas páginas processar (0 = todas).
-    """
     if not os.path.exists(caminho_arquivo):
-        raise ErroPipeline(
-            f"Arquivo não encontrado: {caminho_arquivo}",
-            modulo='Roteador',
-            severidade=Severidade.CRITICA
-        )
+        raise ErroPipeline(f"Arquivo não encontrado: {caminho_arquivo}", modulo='Roteador', severidade=Severidade.CRITICA)
 
     tipo = classificar_arquivo(caminho_arquivo)
     descricao = TIPOS_VALIDOS.get(tipo, 'Desconhecido')
@@ -301,8 +247,7 @@ def rotear_arquivo(caminho_arquivo, limite_paginas=0):
     logger.info(f"Arquivo classificado como: {tipo} ({descricao})", extra={'modulo': 'Roteador'})
 
     funcao = ROTAS.get(tipo, processar_desconhecido)
-    # Se a função aceitar limite_paginas, passar
-    if tipo == 'pdf_rasterizado' or tipo == 'manual':
+    if tipo in ('pdf_rasterizado', 'manual'):
         resultado = funcao(caminho_arquivo, limite_paginas)
     else:
         resultado = funcao(caminho_arquivo)
