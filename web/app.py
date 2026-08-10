@@ -105,35 +105,40 @@ def processar_job_assincrono(job_id):
                     severidade=Severidade.ALTA
                 )
 
-            atualizar_job(job_id, progresso=50, etapa='Montando grafo')
+            # Captura TODOS os campos do resultado do roteador
+            resultado_roteador_result = resultado_roteador['resultado']
+            conexoes = resultado_roteador_result.get('conexoes', [])
+            pinos_mpu = resultado_roteador_result.get('pinos', [])
+            funcoes_da_extração = resultado_roteador_result.get('funcoes')  # <- NOVO
 
-            funcoes = None
+            # Se houver um datasheet enviado separadamente, pode complementar ou substituir
+            funcoes = funcoes_da_extração or {}
             caminho_ds = job.get('caminho_datasheet')
             if caminho_ds and Path(caminho_ds).exists():
                 from extracao_datasheet import extrair_datasheet
                 try:
-                    funcoes = extrair_datasheet(caminho_ds)
+                    funcoes_ds = extrair_datasheet(caminho_ds)
+                    if funcoes_ds:
+                        funcoes.update(funcoes_ds)  # mescla com as extraídas do PDF
                 except Exception as e:
                     logger.warning(f"Erro no datasheet: {e}")
 
             atualizar_job(job_id, progresso=80, etapa='Gerando planilha')
 
-            conexoes = resultado_roteador['resultado'].get('conexoes', [])
-            pinos_mpu = resultado_roteador['resultado'].get('pinos', [])
-            modo = resultado_roteador['resultado'].get('modo', '')
-            modulo = resultado_roteador['resultado'].get('modulo', '')
+            modo = resultado_roteador_result.get('modo', '')
+            modulo = resultado_roteador_result.get('modulo', '')
 
             resultado = {
                 'conexoes': conexoes,
                 'pinos': pinos_mpu,
                 'funcoes': funcoes,
                 'num_conexoes': len(conexoes),
-                'num_pinos': len(pinos_mpu),
+                'num_pinos': len(pinos_mpu) or len(funcoes),  # usa funções se não houver pinos
                 'tipo': resultado_roteador['tipo'],
                 'modulo_processado': modulo,
                 'modo': modo,
-                'num_paginas': resultado_roteador['resultado'].get('num_paginas', 0),
-                'mensagem': resultado_roteador['resultado'].get('mensagem', '')
+                'num_paginas': resultado_roteador_result.get('num_paginas', 0),
+                'mensagem': resultado_roteador_result.get('mensagem', '')
             }
 
             atualizar_job(job_id,
@@ -338,9 +343,28 @@ def download_planilha(job_id):
             download_name=f'pinos_{nome_modulo}.csv'
         )
 
+    # Para diagramas: gera Excel com conexões e funções
     conexoes = resultado.get('conexoes', [])
     if not conexoes:
-        return jsonify({'erro': 'Nenhuma conexão para exportar'}), 400
+        # Se não houver conexões, mas houver funções, gerar CSV com funções
+        funcoes = resultado.get('funcoes', {})
+        if funcoes:
+            import csv
+            import io
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(['Pino', 'Função'])
+            for pino, func in funcoes.items():
+                writer.writerow([pino, func])
+            output.seek(0)
+            nome_modulo = job.get('nome_modulo', 'Manual').replace(' ', '_')
+            return send_file(
+                io.BytesIO(output.getvalue().encode('utf-8')),
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name=f'funcoes_{nome_modulo}.csv'
+            )
+        return jsonify({'erro': 'Nenhum dado para exportar'}), 400
 
     from consolidacao_exportacao import consolidar_conexoes, gerar_excel
     pin_func = resultado.get('funcoes', None)
