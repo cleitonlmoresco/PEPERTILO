@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Processando Documento</title>
+    <style>
+        #loading {
+            display: none;
+            text-align: center;
+            margin-top: 50px;
+            font-family: Arial, sans-serif;
+        }
+        .spinner {
+            border: 8px solid #f3f3f3;
+            border-top: 8px solid #3498db;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Formulário de Envio -->
+    <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
+        <input type="file" name="arquivo" required>
+        <button type="submit">Processar Documento</button>
+    </form>
+
+    <!-- Tela de Carregamento -->
+    <div id="loading">
+        <div class="spinner"></div>
+        <h2>Processando documento com OCR...</h2>
+        <p>Por favor, aguarde enquanto o Tesseract analisa o arquivo.</p>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        const loadingDiv = document.getElementById('loading');
+
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault(); // Evita o comportamento padrão de recarregar a página bruto
+
+            // Oculta o formulário e mostra o carregamento
+            form.style.display = 'none';
+            loadingDiv.style.display = 'block';
+
+            const formData = new FormData(form);
+
+            try {
+                // 1. Envia o arquivo para a rota /upload
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                const jobId = data.job_id;
+
+                if (jobId) {
+                    // 2. Inicia o monitoramento (Polling) do status
+                    verificarStatus(jobId);
+                } else {
+                    alert('Erro ao iniciar o processamento.');
+                    form.style.display = 'block';
+                    loadingDiv.style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Erro:', error);
+                alert('Ocorreu um erro na requisição.');
+                form.style.display = 'block';
+                loadingDiv.style.display = 'none';
+            }
+        });
+
+        async function verificarStatus(jobId) {
+            const intervalo = setInterval(async () => {
+                try {
+                    // Cria uma rota no Flask como /status/<job_id> para checar o andamento
+                    const res = await fetch(`/status/${jobId}`);
+                    const statusData = await res.json();
+
+                    if (statusData.status === 'concluido') {
+                        clearInterval(intervalo);
+                        // Redireciona para a página de resultado final
+                        window.location.href = `/resultado/${jobId}`;
+                    } else if (statusData.status === 'erro') {
+                        clearInterval(intervalo);
+                        alert('Erro durante o processamento do OCR.');
+                        form.style.display = 'block';
+                        loadingDiv.style.display = 'none';
+                    }
+                } catch (err) {
+                    console.error('Erro na checagem de status:', err);
+                }
+            }, 2000); // Checa a cada 2 segundos
+        }
+    </script>
+</body>
+</html>
