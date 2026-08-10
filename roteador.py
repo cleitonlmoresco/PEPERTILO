@@ -46,6 +46,8 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
     dados_por_pagina = {}
     pinos_mpu = []
     paginas_processadas = 0
+    total_textos = 0
+    total_retangulos = 0
 
     for i, page in enumerate(doc):
         if limite_paginas > 0 and i >= limite_paginas:
@@ -65,16 +67,23 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             esqueleto, binaria = restaurar_imagem(img)
             dados_pagina = processar_imagem_restaurada(esqueleto, binaria, original=img)
 
+            linhas = dados_pagina.get('linhas', [])
+            textos = dados_pagina.get('textos', [])
+            retangulos = dados_pagina.get('retangulos', [])
+            emendas = dados_pagina.get('curvas', [])
+
             dados_por_pagina[i+1] = {
-                'linhas': dados_pagina.get('linhas', []),
-                'textos': dados_pagina.get('textos', []),
-                'retangulos': dados_pagina.get('retangulos', []),
-                'curvas': dados_pagina.get('curvas', []),
+                'linhas': linhas,
+                'textos': textos,
+                'retangulos': retangulos,
+                'curvas': emendas,
                 'canvas': dados_pagina.get('canvas', (0, 0, 1000, 1000)),
                 'width': dados_pagina.get('width', 1000),
                 'height': dados_pagina.get('height', 1000)
             }
 
+            total_textos += len(textos)
+            total_retangulos += len(retangulos)
             paginas_processadas += 1
 
             resultado_mpu = processar_modo_mpu(dados_pagina, ferramenta='CarProg_A10')
@@ -107,12 +116,10 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             'ferramenta': 'CarProg_A10'
         }
 
-    total_retangulos = sum(len(d['retangulos']) for d in dados_por_pagina.values())
-    total_linhas = sum(len(d['linhas']) for d in dados_por_pagina.values())
-
-    # Se for manual (poucos retângulos, muitas linhas ou muito texto), extrair datasheet
-    if total_retangulos < 3 or total_linhas < 20:
-        logger.warning("Poucos elementos gráficos - ativando modo DATASHEET/MANUAL", extra={'modulo': 'Roteador'})
+    # NOVA LÓGICA: detectar manual automaticamente
+    # Se há muitos textos em comparação com retângulos, e poucos retângulos, é manual
+    if total_retangulos < 30 and total_textos > total_retangulos * 3:
+        logger.warning(f"Detectado possível manual: {total_textos} textos, {total_retangulos} retângulos. Ativando M6.", extra={'modulo': 'Roteador'})
         try:
             pin_func = extrair_datasheet(caminho_pdf)
             if pin_func:
@@ -125,10 +132,13 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
                     'num_paginas': paginas_processadas,
                     'mensagem': 'Arquivo processado como datasheet (modo leve)'
                 }
+            else:
+                # Se não extraiu nada, ainda tenta construir grafo (fallback)
+                logger.warning("M6 não extraiu funções, tentando grafo...", extra={'modulo': 'Roteador'})
         except Exception as e:
             logger.error(f"Falha na extração automática de datasheet: {e}", extra={'modulo': 'Roteador'})
 
-    # Construir grafo
+    # Se não ativou M6 ou falhou, segue para grafo
     try:
         conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_por_pagina)
         return {
@@ -148,7 +158,7 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
         }
 
 # ============================================================
-# DEMAIS FUNÇÕES
+# DEMAIS FUNÇÕES (sem alterações)
 # ============================================================
 
 def processar_pdf_vetorial(caminho):
