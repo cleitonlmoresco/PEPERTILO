@@ -173,13 +173,18 @@ def _extrair_com_ocr(caminho_pdf):
         raise ErroOCR(f"Falha no OCR: {str(e)}", causa=e)
 
 @monitorar(modulo='M6')
-def extrair_datasheet(caminho_pdf):
+def extrair_datasheet(caminho_pdf, limite_paginas=0):
+    """
+    Extrai a tabela de pinos de um datasheet.
+    Se falhar, tenta o fallback com M9 (Tesseract puro).
+    """
     if not caminho_pdf:
         raise ErroPipeline("Caminho do datasheet não informado", modulo='M6', severidade=Severidade.ALTA)
 
     pin_func = {}
     coletor = ColetorErros()
 
+    # Tenta pdfplumber
     resultado_plumber, erro_plumber = tratar_erro_controlado(
         _extrair_com_pdfplumber, caminho_pdf, valor_padrao={}, modulo='M6'
     )
@@ -188,6 +193,7 @@ def extrair_datasheet(caminho_pdf):
     else:
         pin_func.update(resultado_plumber)
 
+    # Se não extraiu, tenta OCR (PaddleOCR)
     if not pin_func:
         resultado_ocr, erro_ocr = tratar_erro_controlado(
             _extrair_com_ocr, caminho_pdf, valor_padrao={}, modulo='M6'
@@ -197,6 +203,16 @@ def extrair_datasheet(caminho_pdf):
         else:
             pin_func.update(resultado_ocr)
 
+    # FALLBACK FINAL: M9 com Tesseract puro
+    if not pin_func:
+        try:
+            from extracao_manual import extrair_manual_com_tesseract
+            logger.info("M6 falhou. Tentando M9 (Tesseract puro)...", extra={'modulo': 'M6'})
+            pin_func = extrair_manual_com_tesseract(caminho_pdf, limite_paginas)
+        except Exception as e:
+            logger.warning(f"M9 também falhou: {e}", extra={'modulo': 'M6'})
+
+    # Expande siglas
     for pino in pin_func:
         pin_func[pino] = expandir_siglas(pin_func[pino])
 
