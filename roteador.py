@@ -1,6 +1,7 @@
 """
 Roteador - Módulo Central de Encaminhamento.
 Classifica o arquivo e encaminha para os módulos de processamento adequados.
+Suporte a diagramas elétricos, manuais de programadores e datasheets.
 """
 
 import os
@@ -20,13 +21,19 @@ from deteccao_simbolos import processar_imagem_restaurada
 from modo_mpu import processar_modo_mpu
 from extracao_datasheet import extrair_datasheet
 
-# Tenta importar o M9, mas se não existir, define um fallback
+# Tenta importar o M9 (fallback Tesseract simples)
 try:
     from extracao_manual import extrair_manual_com_tesseract
     M9_DISPONIVEL = True
 except ImportError:
     M9_DISPONIVEL = False
-    logger.warning("Módulo M9 (extracao_manual) não encontrado. Extração de manuais pode falhar.", extra={'modulo': 'Roteador'})
+
+# Tenta importar o M10 (extração avançada para manuais de programadores)
+try:
+    from extracao_programadores import extrair_programador_com_tesseract
+    M10_DISPONIVEL = True
+except ImportError:
+    M10_DISPONIVEL = False
 
 DEBUG_MODE = os.environ.get('DEBUG_MODE', 'false').lower() == 'true'
 DEBUG_DIR = Path('debug')
@@ -34,7 +41,7 @@ if DEBUG_MODE:
     DEBUG_DIR.mkdir(exist_ok=True)
 
 # ============================================================
-# PROCESSAR PDF RASTERIZADO
+# PROCESSAR PDF RASTERIZADO (com detecção de manuais)
 # ============================================================
 def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
     logger.info(">>> INICIANDO PROCESSAMENTO DE PDF RASTERIZADO...", extra={'modulo': 'Roteador'})
@@ -94,6 +101,7 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             total_retangulos += len(retangulos)
             paginas_processadas += 1
 
+            # Verifica se é MPU
             resultado_mpu = processar_modo_mpu(dados_pagina, ferramenta='CarProg_A10')
             if resultado_mpu.get('modo') == 'mpu':
                 logger.info(">>> MODO MPU ATIVADO <<<", extra={'modulo': 'MPU'})
@@ -113,6 +121,7 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
     if paginas_processadas == 0:
         return {'status': 'erro', 'mensagem': 'Nenhuma página processada com sucesso'}
 
+    # Se detectou MPU, retorna pinos
     if pinos_mpu:
         return {
             'status': 'ok',
@@ -124,28 +133,66 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
             'ferramenta': 'CarProg_A10'
         }
 
-    # DETECÇÃO DE MANUAL
+    # ============================================================
+    # DETECÇÃO DE MANUAL (baseado na proporção texto/retângulos)
+    # ============================================================
     if total_retangulos < 30 and total_textos > total_retangulos * 3:
-        logger.warning(f"Detectado possível manual: {total_textos} textos, {total_retangulos} retângulos. Ativando extração de datasheet.", extra={'modulo': 'Roteador'})
+        logger.warning(
+            f"Detectado possível manual: {total_textos} textos, {total_retangulos} retângulos. "
+            f"Ativando extração especializada.",
+            extra={'modulo': 'Roteador'}
+        )
+
+        # --- Tenta M10 (específico para manuais de programadores) ---
+        if M10_DISPONIVEL:
+            try:
+                logger.info(">>> Tentando M10 (extração avançada para programadores)...", extra={'modulo': 'Roteador'})
+                pin_func = extrair_programador_com_tesseract(caminho_pdf, limite_paginas)
+                if pin_func:
+                    logger.info(f"M10 extraiu {len(pin_func)} funções", extra={'modulo': 'Roteador'})
+                    return {
+                        'status': 'ok',
+                        'modulo': 'M10',
+                        'funcoes': to_native(pin_func),
+                        'num_pinos': len(pin_func),
+                        'num_paginas': paginas_processadas,
+                        'mensagem': 'Manual processado com M10 (layout+OCR)'
+                    }
+                else:
+                    logger.warning("M10 não extraiu funções.", extra={'modulo': 'Roteador'})
+            except Exception as e:
+                logger.error(f"M10 falhou: {e}", extra={'modulo': 'Roteador'})
+
+        # --- Fallback para M6 (que usa M9 como fallback) ---
         try:
-            # Tenta M6 (que já tem fallback para M9)
+            logger.info(">>> Tentando M6 (datasheet genérico)...", extra={'modulo': 'Roteador'})
             pin_func = extrair_datasheet(caminho_pdf, limite_paginas)
             if pin_func:
-                logger.info(f"Extração manual concluída: {len(pin_func)} funções", extra={'modulo': 'Roteador'})
+                logger.info(f"M6 extraiu {len(pin_func)} funções", extra={'modulo': 'Roteador'})
                 return {
                     'status': 'ok',
-                    'modulo': 'M9',
+                    'modulo': 'M6',
                     'funcoes': to_native(pin_func),
                     'num_pinos': len(pin_func),
                     'num_paginas': paginas_processadas,
-                    'mensagem': 'Manual processado com sucesso (M9/Tesseract)'
+                    'mensagem': 'Manual processado com M6/M9'
                 }
             else:
-                logger.warning("Nenhuma função extraída do manual.", extra={'modulo': 'Roteador'})
+                logger.warning("M6 não extraiu funções.", extra={'modulo': 'Roteador'})
         except Exception as e:
-            logger.error(f"Falha na extração manual: {e}", extra={'modulo': 'Roteador'})
+            logger.error(f"M6 falhou: {e}", extra={'modulo': 'Roteador'})
 
-    # Tenta construir grafo (diagrama)
+        # --- Se nada funcionou, retorna erro informativo ---
+        return {
+            'status': 'erro',
+            'mensagem': 'Arquivo parece ser um manual, mas não foi possível extrair a tabela de pinos. '
+                        'Verifique se o OCR está configurado corretamente.',
+            'num_paginas': paginas_processadas
+        }
+
+    # ============================================================
+    # SE NÃO É MANUAL, TENTA CONSTRUIR GRAFO (DIAGRAMA)
+    # ============================================================
     try:
         conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados_por_pagina)
         return {
@@ -165,7 +212,7 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
         }
 
 # ============================================================
-# DEMAIS FUNÇÕES (sem alterações)
+# DEMAIS FUNÇÕES (vetorial, imagem, foto, manual explícito)
 # ============================================================
 
 def processar_pdf_vetorial(caminho):
@@ -217,7 +264,7 @@ def processar_foto_celular(caminho_imagem):
     return processar_imagem_limpa(caminho_imagem)
 
 def processar_manual(caminho_pdf):
-    logger.info(f"Processando manual: {caminho_pdf}", extra={'modulo': 'Roteador'})
+    logger.info(f"Processando manual explicitamente: {caminho_pdf}", extra={'modulo': 'Roteador'})
     try:
         pin_func = extrair_datasheet(caminho_pdf)
         if pin_func:
@@ -247,6 +294,9 @@ ROTAS = {
     'desconhecido': processar_desconhecido,
 }
 
+# ============================================================
+# FUNÇÃO PRINCIPAL DE ROTEAMENTO
+# ============================================================
 @monitorar(modulo='Roteador')
 def rotear_arquivo(caminho_arquivo, limite_paginas=0):
     if not os.path.exists(caminho_arquivo):
@@ -282,7 +332,7 @@ if __name__ == '__main__':
         if resultado['resultado']['status'] == 'ok':
             if resultado['resultado'].get('modo') == 'mpu':
                 print(f"Pinos MPU encontrados: {resultado['resultado']['num_pinos']}")
-            elif resultado['resultado'].get('modulo') in ('M6', 'M9'):
+            elif resultado['resultado'].get('modulo') in ('M6', 'M9', 'M10'):
                 print(f"Funções de pinos extraídas: {resultado['resultado']['num_pinos']}")
             else:
                 print(f"Conexões encontradas: {resultado['resultado'].get('num_conexoes', 0)}")
