@@ -6,8 +6,7 @@ de um PDF com camada vetorial, aplicando filtros para ignorar ruídos.
 
 import math
 import pdfplumber
-import fitz
-import numpy as np
+import pymupdf as fitz
 from logger_erros import (logger, monitorar, ErroExtracao, ErroPipeline,
                           Severidade, tratar_erro_controlado, ColetorErros)
 from utils import to_native
@@ -26,10 +25,49 @@ CONFIG = {
 def ponto_dentro_canvas(x, y, canvas):
     return canvas[0] <= x <= canvas[2] and canvas[1] <= y <= canvas[3]
 
+# pdfplumber expõe y0/y1 em coordenadas PDF (origem embaixo), mas 'top'/'bottom'
+# já vêm de cima para baixo — que é o sistema usado pelo canvas e pelo fitz.
+def _y_topo(obj):
+    return obj['top'] if 'top' in obj else obj['y0']
+
+def _y_base(obj):
+    return obj['bottom'] if 'bottom' in obj else obj['y1']
+
 def cor_valida(cor_rgb):
+    """Aceita preto/cinza-escuro e cores fortes; descarta cinza-claro/fundo.
+
+    pdfplumber pode devolver:
+      - None
+      - escalar (DeviceGray: 0 = preto, 1 = branco)
+      - tupla RGB (0..1) ou CMYK (0..1)
+    """
     if cor_rgb is None:
         return True
-    r, g, b = cor_rgb[:3]
+
+    if isinstance(cor_rgb, (int, float)):
+        return cor_rgb < 0.5
+
+    try:
+        valores = list(cor_rgb)
+    except TypeError:
+        return True
+
+    if not valores:
+        return True
+    if len(valores) == 1:
+        return valores[0] < 0.5
+    if len(valores) == 3:
+        r, g, b = valores
+    elif len(valores) >= 4:
+        c, m, y, k = valores[:4]
+        r, g, b = (1 - c) * (1 - k), (1 - m) * (1 - k), (1 - y) * (1 - k)
+    else:
+        return True
+
+    # Normaliza 0..1 (pdfplumber) para 0..255 antes dos limiares abaixo.
+    if max(r, g, b) <= 1.0:
+        r, g, b = r * 255, g * 255, b * 255
+
     soma = r + g + b
     if soma < 300:
         return True
@@ -40,7 +78,7 @@ def cor_valida(cor_rgb):
     return False
 
 @monitorar(modulo='M2')
-def extrair_primitivas_vetorial(caminho_pdf):
+def extrair_primitivas_vetorial(caminho_pdf, limite_paginas=0):
     if not caminho_pdf or not isinstance(caminho_pdf, str):
         raise ErroExtracao("Caminho do PDF inválido ou não informado", severidade=Severidade.CRITICA)
 
@@ -50,10 +88,13 @@ def extrair_primitivas_vetorial(caminho_pdf):
     try:
         pdf = pdfplumber.open(caminho_pdf)
     except Exception as e:
-        raise ErroExtracao(f"Não foi possível abrir o PDF: {str(e)}", severidade=Severidade.CRITICA, causa=e)
+        raise ErroExtracao(f"Não foi possível abrir o PDF: {str(e)}", severidade=Severidade.CRITICA, causa=e) from e
 
     try:
         for i, page in enumerate(pdf.pages):
+            if limite_paginas > 0 and i >= limite_paginas:
+                logger.info(f"Limite de {limite_paginas} páginas atingido.", extra={'modulo': 'M2'})
+                break
             try:
                 canvas = definir_canvas(page)
                 linhas = extrair_linhas(page, canvas, coletor)
@@ -113,56 +154,129 @@ def extrair_linhas(page, canvas, coletor=None):
     tamanho_canvas = max(canvas[2] - canvas[0], canvas[3] - canvas[1])
     for linha in page.lines:
         try:
-            if not ponto_dentro_canvas(linha['x0'], linha['y0'], canvas) and \
-               not ponto_dentro_canvas(linha['x1'], linha['y1'], canvas):
+            y0, y1 = _y_topo(linha), _y_base(linha)
+            if not ponto_dentro_canvas(linha['x0'], y0, canvas) and \
+               not ponto_dentro_canvas(linha['x1'], y1, canvas):
                 continue
-            espessura = linha.get('linewidth', 1)
+            # linewidth 0 = hairline (largura mínima), muito comum em diagramas CAD
+            espessura = linha.get('linewidth') or 1
             if espessura < CONFIG['espessura_min'] or espessura > CONFIG['espessura_max']:
                 continue
             if not cor_valida(linha.get('stroking_color')):
                 continue
-            comp = math.hypot(linha['x1'] - linha['x0'], linha['y1'] - linha['y0'])
+            comp = math.hypot(linha['x1'] - linha['x0'], y1 - y0)
             if comp > 0.8 * tamanho_canvas:
                 continue
-            linhas_validas.append(((linha['x0'], linha['y0']), (linha['x1'], linha['y1'])))
+            linhas_validas.append(((linha['x0'], y0), (linha['x1'], y1)))
         except Exception as e:
             if coletor:
                 coletor.adicionar_aviso(f"Linha ignorada: {str(e)}")
     return linhas_validas
 
+def _agrupar_palavras(palavras, gap_max=6.0, tol_linha=2.5):
+    """Agrupa palavras vizinhas na mesma linha visual (ex.: 'SENSOR 1').
+
+    extract_words separa rótulos com espaço e o pipeline acabava usando só a
+    primeira palavra, longe do fim do fio. extract_text_lines, por outro lado,
+    junta rótulos distantes que compartilham a mesma altura. Aqui o critério é
+    a distância horizontal real entre as palavras.
+    """
+    grupos = []
+    for w in sorted(palavras, key=lambda p: (p['top'], p['x0'])):
+        texto = w.get('text', '').strip()
+        if not texto:
+            continue
+        cy = (w['top'] + w['bottom']) / 2
+        for g in grupos:
+            if abs(g['cy'] - cy) > tol_linha:
+                continue
+            if w['x0'] - g['x1'] > gap_max or w['x0'] < g['x0']:
+                continue
+            g['x1'] = max(g['x1'], w['x1'])
+            g['y0'] = min(g['y0'], w['top'])
+            g['y1'] = max(g['y1'], w['bottom'])
+            g['cy'] = (g['y0'] + g['y1']) / 2
+            g['texto'] = f"{g['texto']} {texto}"
+            g['tam'] = max(g['tam'], w['bottom'] - w['top'])
+            break
+        else:
+            grupos.append({
+                'x0': w['x0'], 'x1': w['x1'],
+                'y0': w['top'], 'y1': w['bottom'],
+                'cy': cy, 'texto': texto,
+                'tam': w['bottom'] - w['top'],
+            })
+    return grupos
+
 def extrair_textos(page, canvas):
     textos = []
     palavras, erro = tratar_erro_controlado(page.extract_words, keep_blank_chars=False,
                                             valor_padrao=[], modulo='M2')
-    for w in palavras:
-        xc = (w['x0'] + w['x1']) / 2
-        yc = (w['y0'] + w['y1']) / 2
+    for g in _agrupar_palavras(palavras):
+        xc = (g['x0'] + g['x1']) / 2
+        yc = (g['y0'] + g['y1']) / 2
         if not ponto_dentro_canvas(xc, yc, canvas):
             continue
-        altura = w.get('height', 0)
+        altura = g['tam']
         if altura < CONFIG['tam_min_fonte']:
             continue
-        texto = w['text'].strip()
-        if not texto:
-            continue
-        textos.append({'x': xc, 'y': yc, 'texto': texto, 'tam': altura})
+        textos.append({
+            'x': xc, 'y': yc, 'texto': g['texto'], 'tam': altura,
+            'x0': g['x0'], 'x1': g['x1'], 'y0': g['y0'], 'y1': g['y1'],
+        })
     return textos
+
+def _retangulos_de_curvas(page):
+    """Recupera retângulos fechados que o pdfplumber classificou como 'curve'.
+
+    PDFs gerados por CAD/PyMuPDF costumam desenhar caixas como um path de 4
+    linhas + fechamento ('h'); nesse caso elas não entram em page.rects e a
+    ECU nunca era detectada.
+    """
+    retangulos = []
+    for curve in getattr(page, 'curves', []) or []:
+        try:
+            path = curve.get('path') or []
+            if len(path) < 4 or not any(item[0] == 'h' for item in path):
+                continue
+            if any(item[0] not in ('m', 'l', 'h') for item in path):
+                continue
+            pontos = {item[1] for item in path if item[0] in ('m', 'l')}
+            if len(pontos) != 4:
+                continue
+            xs = {round(p[0], 1) for p in pontos}
+            ys = {round(p[1], 1) for p in pontos}
+            if len(xs) != 2 or len(ys) != 2:
+                continue
+            retangulos.append(curve)
+        except Exception:
+            continue
+    return retangulos
 
 def extrair_retangulos(page, canvas, coletor=None):
     retangulos = []
-    for rect in page.rects:
+    candidatos = list(page.rects) + _retangulos_de_curvas(page)
+    vistos = set()
+    for rect in candidatos:
         try:
+            chave = (round(rect['x0'], 1), round(_y_topo(rect), 1),
+                     round(rect['x1'], 1), round(_y_base(rect), 1))
+            if chave in vistos:
+                continue
+            vistos.add(chave)
             cx = (rect['x0'] + rect['x1']) / 2
-            cy = (rect['y0'] + rect['y1']) / 2
+            cy = (_y_topo(rect) + _y_base(rect)) / 2
             if not ponto_dentro_canvas(cx, cy, canvas):
                 continue
             area = abs(rect['width'] * rect['height'])
             if area < CONFIG['area_min_componente']:
                 continue
-            if rect.get('linewidth', 1) == 0 and not rect.get('fill'):
+            # linewidth 0 = hairline (comum em CAD); só descarta se não há
+            # traço nem preenchimento (objeto invisível).
+            if rect.get('linewidth', 1) == 0 and not rect.get('fill') and not rect.get('stroke'):
                 continue
             retangulos.append({
-                'x0': rect['x0'], 'y0': rect['y0'], 'x1': rect['x1'], 'y1': rect['y1'],
+                'x0': rect['x0'], 'y0': _y_topo(rect), 'x1': rect['x1'], 'y1': _y_base(rect),
                 'width': rect['width'], 'height': rect['height'], 'area': area
             })
         except Exception as e:
@@ -175,13 +289,16 @@ def extrair_curvas_emendas(page, canvas):
     if hasattr(page, 'curves') and page.curves:
         for curve in page.curves:
             try:
-                if not ponto_dentro_canvas((curve['x0']+curve['x1'])/2, (curve['y0']+curve['y1'])/2, canvas):
+                y0, y1 = _y_topo(curve), _y_base(curve)
+                cy = (y0 + y1) / 2
+                cx = (curve['x0'] + curve['x1']) / 2
+                if not ponto_dentro_canvas(cx, cy, canvas):
                     continue
                 w = abs(curve['x1'] - curve['x0'])
-                h = abs(curve['y1'] - curve['y0'])
+                h = abs(y1 - y0)
                 if 2 < w < 8 and 2 < h < 8 and abs(w - h) < 3:
                     if curve.get('fill'):
-                        emendas.append(((curve['x0']+curve['x1'])/2, (curve['y0']+curve['y1'])/2))
+                        emendas.append((cx, cy))
             except Exception:
                 continue
     return emendas

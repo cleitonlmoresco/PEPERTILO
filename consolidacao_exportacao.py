@@ -8,7 +8,7 @@ import pandas as pd
 import re
 from logger_erros import logger, monitorar, ErroExportacao, Severidade
 
-REGEX_BANCADA = re.compile(r'(30|15|31|BAT|IGN|GND|CAN[_ ]?[HL]|K[- ]?LINE|LIN)', re.IGNORECASE)
+REGEX_BANCADA = re.compile(r'(?:30|15|31|BAT|IGN|GND|CAN[_ ]?[HL]|K[- ]?LINE|LIN)', re.IGNORECASE)
 
 COLUNAS = [
     'Conector',

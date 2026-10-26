@@ -120,7 +120,7 @@ def extrair_manual_com_tesseract(caminho_pdf, limite_paginas=0):
     Extrai tabelas de pinagem de um PDF manual usando Tesseract em cada página.
     """
     try:
-        import fitz
+        import pymupdf as fitz
     except ImportError:
         raise ErroPipeline("PyMuPDF (fitz) não instalado", modulo='M9', severidade=Severidade.CRITICA)
 

@@ -8,7 +8,6 @@ from collections import deque
 import networkx as nx
 import numpy as np
 from logger_erros import logger, monitorar, ErroGrafo, ErroPipeline, Severidade, ColetorErros
-from utils import to_native
 
 CONFIG = {
     'dist_max_no': 15.0,
@@ -25,6 +24,28 @@ RE_CONTINUACAO = re.compile(r'(?:Pág\.?\s*|Folha\s*|página\s*|continua\s+(?:na
 
 def ponto_em_retangulo(x, y, rect):
     return rect['x0'] <= x <= rect['x1'] and rect['y0'] <= y <= rect['y1']
+
+def distancia_texto_ponto(texto, x, y):
+    """Distância do ponto à caixa do texto (0 se estiver dentro dela)."""
+    x0 = texto.get('x0', texto['x'])
+    x1 = texto.get('x1', texto['x'])
+    y0 = texto.get('y0', texto['y'])
+    y1 = texto.get('y1', texto['y'])
+    dx = max(x0 - x, 0, x - x1)
+    dy = max(y0 - y, 0, y - y1)
+    return math.hypot(dx, dy)
+
+def endpoint_mais_proximo(texto, linhas, max_dist):
+    """Retorna o extremo de fio mais próximo do rótulo (ou None)."""
+    melhor = None
+    dist_min = max_dist
+    for (x1, y1), (x2, y2) in linhas or []:
+        for x, y in ((x1, y1), (x2, y2)):
+            d = distancia_texto_ponto(texto, x, y)
+            if d <= dist_min:
+                dist_min = d
+                melhor = (x, y)
+    return melhor
 
 def ponto_perto_retangulo(x, y, rect, dist):
     x_min, x_max = rect['x0'] - dist, rect['x1'] + dist
@@ -77,17 +98,28 @@ def identificar_ecu(retangulos, canvas):
     # Se todos são muito grandes, pega o menor
     return ordenados[-1] if ordenados else None, []
 
-def extrair_pinos_ecu(textos, ecu, altura_fonte):
+def extrair_pinos_ecu(textos, ecu, altura_fonte, linhas=None):
     pinos = {}
     if ecu is None:
         return pinos
     dist_limite = max(altura_fonte * 3, 30)
     for t in textos:
-        if RE_PINO.match(t['texto']) and ponto_perto_retangulo(t['x'], t['y'], ecu, dist_limite):
+        if not RE_PINO.match(t['texto']):
+            continue
+        if not ponto_perto_retangulo(t['x'], t['y'], ecu, dist_limite):
+            continue
+        if linhas is not None:
+            # Um pino de verdade fica junto ao ponto onde o fio encosta na ECU;
+            # isso evita que o título "ECU" vire um pino.
+            endpoint = endpoint_mais_proximo(t, linhas, dist_limite)
+            if endpoint is None:
+                continue
+            pinos[t['texto']] = endpoint
+        else:
             pinos[t['texto']] = (t['x'], t['y'])
     return pinos
 
-def extrair_perifericos(textos, retangulos, ecu):
+def extrair_perifericos(textos, retangulos, ecu, linhas=None):
     perifericos = {}
     for rect in retangulos:
         if ecu and rect == ecu:
@@ -105,7 +137,10 @@ def extrair_perifericos(textos, retangulos, ecu):
             continue
         dentro = any(ponto_em_retangulo(t['x'], t['y'], rect) for rect in retangulos)
         if not dentro and len(t['texto']) > 2:
-            perifericos[t['texto']] = (t['x'], t['y'])
+            # Rótulo solto: ancora no extremo de fio mais próximo (o centro do
+            # texto pode ficar longe do fio quando o rótulo é comprido).
+            endpoint = endpoint_mais_proximo(t, linhas, CONFIG['dist_max_no']) if linhas else None
+            perifericos[t['texto']] = endpoint or (t['x'], t['y'])
     return perifericos
 
 def construir_grafo_pagina(linhas, pinos_ecu, perifericos, emendas, config):
@@ -248,7 +283,7 @@ def bfs_rastrear_global(G_global, pinos_iniciais, textos_por_pagina, config):
                 for u, v in caminho_arestas:
                     x1, y1 = G_global.nodes[u]['pos']
                     x2, y2 = G_global.nodes[v]['pos']
-                    for pag, textos in textos_por_pagina.items():
+                    for _pag, textos in textos_por_pagina.items():
                         for t in textos:
                             d = distancia_ponto_segmento(t['x'], t['y'], x1, y1, x2, y2)
                             if d < config['dist_texto']:
@@ -295,8 +330,8 @@ def processar_diagrama_multipagina(dados_paginas):
 
             ecu, outros = identificar_ecu(retangulos, canvas)
             altura_fonte = np.mean([t['tam'] for t in textos if 'tam' in t]) if textos else CONFIG['altura_fonte_padrao']
-            pinos = extrair_pinos_ecu(textos, ecu, altura_fonte) if ecu else {}
-            perifs = extrair_perifericos(textos, outros, ecu) if ecu else {}
+            pinos = extrair_pinos_ecu(textos, ecu, altura_fonte, linhas) if ecu else {}
+            perifs = extrair_perifericos(textos, outros, ecu, linhas) if ecu else {}
 
             G = construir_grafo_pagina(linhas, pinos, perifs, emendas, CONFIG)
             detectar_continuacoes(G, textos, num_pag, CONFIG)
@@ -314,7 +349,7 @@ def processar_diagrama_multipagina(dados_paginas):
     G_global = unificar_grafos(grafos_pagina)
     pinos_iniciais = {}
     for pag, pinos in pinos_por_pagina.items():
-        for nome_pino, pos in pinos.items():
+        for nome_pino, _pos in pinos.items():
             node_global = f"p{pag}_{nome_pino}"
             if node_global in G_global:
                 pinos_iniciais[nome_pino] = node_global

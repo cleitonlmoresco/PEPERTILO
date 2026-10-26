@@ -4,7 +4,7 @@ SEM OCR. Usa extração de texto direta do PDF + regex.
 """
 
 import re
-import fitz
+import pymupdf as fitz
 from logger_erros import logger
 
 # Padrões para extração
