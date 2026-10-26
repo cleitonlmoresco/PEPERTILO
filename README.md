@@ -81,8 +81,8 @@ no PyMuPDF 2.x.
 Nunca versione `.env`, chaves ou PDFs de clientes. Em produção, defina
 `SECRET_KEY` forte e mantenha `FLASK_DEBUG` desligado.
 
-O workflow de CI pronto está em `ci/github-actions.yml`. Para ativá-lo, copie
-para `.github/workflows/ci.yml`; o token do GitHub precisa do escopo `workflow`.
+O workflow de CI está em `.github/workflows/ci.yml` e roda lint e testes em todas
+as pushes e pull requests.
 
 ## Testes
 
