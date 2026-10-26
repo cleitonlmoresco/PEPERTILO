@@ -103,7 +103,7 @@ def _extrair_com_pdfplumber(caminho_pdf):
 
 def _extrair_com_ocr(caminho_pdf):
     try:
-        import fitz
+        import pymupdf as fitz
         from paddleocr import PaddleOCR
         doc = fitz.open(caminho_pdf)
         pin_func = {}

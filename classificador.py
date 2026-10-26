@@ -4,7 +4,7 @@ Identifica o tipo de arquivo (PDF vetorial, PDF rasterizado, imagem, foto, manua
 """
 
 import os
-import fitz
+import pymupdf as fitz
 from PIL import Image
 from logger_erros import logger, monitorar, ErroPipeline, Severidade, tratar_erro_controlado
 

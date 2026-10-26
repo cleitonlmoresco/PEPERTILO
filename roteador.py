@@ -58,7 +58,7 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
     coletor = ColetorErros()
 
     try:
-        import fitz
+        import pymupdf as fitz
         doc = fitz.open(caminho_pdf)
     except Exception as e:
         return {'status': 'erro', 'mensagem': f'Não foi possível abrir o PDF: {str(e)}'}

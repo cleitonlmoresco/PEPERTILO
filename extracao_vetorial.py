@@ -6,7 +6,7 @@ de um PDF com camada vetorial, aplicando filtros para ignorar ruídos.
 
 import math
 import pdfplumber
-import fitz
+import pymupdf as fitz
 from logger_erros import (logger, monitorar, ErroExtracao, ErroPipeline,
                           Severidade, tratar_erro_controlado, ColetorErros)
 from utils import to_native

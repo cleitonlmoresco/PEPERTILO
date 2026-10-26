@@ -186,7 +186,7 @@ def extrair_por_palavras_chave(texto_bruto):
 def extrair_programador_com_tesseract(caminho_pdf, limite_paginas=0):
     log(f"Iniciando M10 para: {caminho_pdf}", 'info')
     try:
-        import fitz
+        import pymupdf as fitz
     except ImportError:
         log("PyMuPDF não instalado", 'error')
         return {}
