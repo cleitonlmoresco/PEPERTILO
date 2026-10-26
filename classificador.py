@@ -35,20 +35,24 @@ def possui_camada_vetorial(caminho_pdf, limiar_linhas=30):
     try:
         doc = fitz.open(caminho_pdf)
     except Exception as e:
-        raise ErroPipeline(f"Não foi possível abrir o PDF: {str(e)}", modulo='M1', severidade=Severidade.ALTA, causa=e)
+        raise ErroPipeline(f"Não foi possível abrir o PDF: {str(e)}", modulo='M1', severidade=Severidade.ALTA, causa=e) from e
 
     total_linhas = 0
     paginas_com_dados = 0
     try:
         for pagina in doc:
             paths = pagina.get_drawings()
-            num_linhas = sum(1 for path in paths if path.get('type') == 'l')
+            # get_drawings() devolve paths (type 's' = stroke); as linhas ficam
+            # nos itens: ('l', p1, p2). Comparar path['type'] == 'l' dava sempre
+            # 0 e todo PDF vetorial era classificado como rasterizado.
+            num_linhas = sum(
+                1 for path in paths for item in path.get('items', []) if item[0] == 'l'
+            )
             total_linhas += num_linhas
             if num_linhas > 0:
                 paginas_com_dados += 1
     except Exception as e:
         logger.error(f"Erro ao analisar PDF: {str(e)}", extra={'modulo': 'M1'})
-        doc.close()
         return False
     finally:
         doc.close()
@@ -102,19 +106,20 @@ def analisar_conteudo_pdf(caminho_pdf):
         
         if total_texto == 0 and total_drawings == 0:
             return 'vazio'
-        
-        # Se há muito texto e poucos desenhos -> manual
-        if total_texto > 300 and total_drawings < 20:
-            return 'manual'
-        
-        # Se há muitos desenhos (linhas) -> diagrama
-        if total_drawings > 50:
+
+        # Desenhos vetoriais são o sinal mais confiável: um diagrama pode ter
+        # centenas de caracteres de rótulos e continuar sendo um diagrama.
+        if total_drawings >= 20:
             return 'diagrama'
-        
-        # Caso misto: se mais texto que desenhos, é manual
-        if total_texto > total_drawings * 5:
+
+        # Nenhum desenho: é documento de texto (datasheet/manual).
+        if total_drawings == 0:
+            return 'manual' if total_texto > 0 else 'vazio'
+
+        # Poucos desenhos e muito texto tende a ser manual com tabelas.
+        if total_texto > 500:
             return 'manual'
-        
+
         return 'misto'
     except Exception as e:
         logger.warning(f"Erro na pré-classificação: {e}", extra={'modulo': 'M1'})
@@ -136,8 +141,12 @@ def classificar_arquivo(caminho_arquivo):
             if categoria == 'manual':
                 logger.info("PDF classificado como manual/datasheet", extra={'modulo': 'M1'})
                 return 'manual'
-            else:
-                return 'pdf_rasterizado'
+            if categoria == 'diagrama':
+                # Desenhos suficientes para extração vetorial direta, mesmo sem
+                # o mínimo de linhas retas exigido por possui_camada_vetorial.
+                logger.info("PDF classificado como diagrama vetorial (pré-classificação)", extra={'modulo': 'M1'})
+                return 'pdf_vetorial'
+            return 'pdf_rasterizado'
     elif tipo_base == 'imagem':
         info, erro = tratar_erro_controlado(analisar_imagem, caminho_arquivo, valor_padrao={'provavel_foto': False}, modulo='M1')
         if erro:

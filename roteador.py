@@ -29,7 +29,7 @@ except ImportError:
     logger.warning("M11 (extracao_carprog) não disponível", extra={'modulo': 'Roteador'})
 # M9 - fallback simples com Tesseract
 try:
-    from extracao_manual import extrair_manual_com_tesseract
+    from extracao_manual import extrair_manual_com_tesseract  # noqa: F401 (teste de disponibilidade)
     M9_DISPONIVEL = True
 except ImportError:
     M9_DISPONIVEL = False
@@ -82,7 +82,9 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
         try:
             logger.info(f">>> Extraindo página {i+1}/{total_paginas}", extra={'modulo': 'Roteador'})
 
-            pix = page.get_pixmap(dpi=300)
+            # Força RGB: PDFs em CMYK ou escala de cinza vinham com n != 3 e o
+            # reshape quebrava ("cannot reshape array of size ... into shape (...,3)").
+            pix = page.get_pixmap(dpi=300, colorspace=fitz.csRGB, alpha=False)
             img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
@@ -244,23 +246,25 @@ def processar_pdf_rasterizado(caminho_pdf, limite_paginas=0):
 # DEMAIS FUNÇÕES (sem alterações)
 # ============================================================
 
-def processar_pdf_vetorial(caminho):
+def processar_pdf_vetorial(caminho, limite_paginas=0):
     logger.info(f"Processando PDF vetorial: {caminho}", extra={'modulo': 'Roteador'})
     try:
-        dados = extrair_primitivas_vetorial(caminho)
+        dados = extrair_primitivas_vetorial(caminho, limite_paginas)
         if not dados:
             return {'status': 'erro', 'mensagem': 'Nenhum dado extraído do PDF.'}
         dados = to_native(dados)
         if len(dados) > 1:
             conexoes, G, pinos, perifs = processar_diagrama_multipagina(dados)
         else:
-            conexoes, G, pinos, perifs = processar_diagrama(dados[1])
+            # dict de páginas pode não começar em 1; usar o único valor existente
+            conexoes, G, pinos, perifs = processar_diagrama(next(iter(dados.values())))
         return {
             'status': 'ok',
             'modulo': 'M5',
             'arquivo': str(caminho),
             'conexoes': to_native(conexoes),
             'num_conexoes': int(len(conexoes)),
+            'num_pinos': int(len(pinos)),
             'num_pinos_ecu': int(len(pinos)),
             'num_paginas': int(len(dados))
         }
@@ -292,10 +296,10 @@ def processar_imagem_limpa(caminho_imagem):
 def processar_foto_celular(caminho_imagem):
     return processar_imagem_limpa(caminho_imagem)
 
-def processar_manual(caminho_pdf):
+def processar_manual(caminho_pdf, limite_paginas=0):
     logger.info(f"Processando manual explicitamente: {caminho_pdf}", extra={'modulo': 'Roteador'})
     try:
-        pin_func = extrair_datasheet(caminho_pdf)
+        pin_func = extrair_datasheet(caminho_pdf, limite_paginas)
         if pin_func:
             return {
                 'status': 'ok',
@@ -334,7 +338,7 @@ def rotear_arquivo(caminho_arquivo, limite_paginas=0):
     logger.info(f"Arquivo classificado como: {tipo} ({descricao})", extra={'modulo': 'Roteador'})
 
     funcao = ROTAS.get(tipo, processar_desconhecido)
-    if tipo in ('pdf_rasterizado', 'manual'):
+    if tipo in ('pdf_vetorial', 'pdf_rasterizado', 'manual'):
         resultado = funcao(caminho_arquivo, limite_paginas)
     else:
         resultado = funcao(caminho_arquivo)
